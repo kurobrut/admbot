@@ -494,27 +494,21 @@ async def on_ready():
 
 @bot.tree.command(
     name="setup",
-    description="Configure the ticket, vouch, status, customer role, and welcome system."
+    description="Configure only the ticket system."
 )
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(
     panel_channel="Channel where the ticket panel will be sent",
     ticket_category="Category where new tickets will be created",
-    vouch_channel="Channel where /vouch messages will be posted",
-    status_channel="Channel where order status updates will be posted",
-    welcome_goodbye_channel="Channel where welcome and goodbye messages are sent",
     staff_role="Staff role allowed to manage tickets and /say",
-    customer_role="Role automatically given to members upon joining"
+    vouch_channel="Optional channel where /vouch messages are posted"
 )
 async def setup(
     interaction: discord.Interaction,
     panel_channel: discord.TextChannel,
     ticket_category: discord.CategoryChannel,
-    vouch_channel: discord.TextChannel,
-    status_channel: discord.TextChannel | None = None,
-    welcome_goodbye_channel: discord.TextChannel | None = None,
     staff_role: discord.Role | None = None,
-    customer_role: discord.Role | None = None
+    vouch_channel: discord.TextChannel | None = None
 ):
 
     if not interaction.user.guild_permissions.administrator:
@@ -525,17 +519,14 @@ async def setup(
 
     config["panel_channel_id"] = panel_channel.id
     config["ticket_category_id"] = ticket_category.id
-    config["vouch_channel_id"] = vouch_channel.id
-    config["status_channel_id"] = status_channel.id if status_channel else None
-    config["welcome_goodbye_channel_id"] = welcome_goodbye_channel.id if welcome_goodbye_channel else None
     config["staff_role_id"] = staff_role.id if staff_role else None
-    if customer_role:
-        config["customer_role_id"] = customer_role.id
+    if vouch_channel:
+        config["vouch_channel_id"] = vouch_channel.id
 
     save_config(config)
 
     embed = discord.Embed(
-        title="抓・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
+        title="୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
         description=(
             "Need help with an order?\n"
             "Want to ask about one of our houses?\n\n"
@@ -552,18 +543,83 @@ async def setup(
         view=TicketView()
     )
 
+    await interaction.response.send_message(
+        "╭───────────────୨୧\n"
+        "│ **Ticket Setup Complete! ♡**\n"
+        "╰───────────────୨୧\n\n"
+        f"🎫 Panel: {panel_channel.mention}\n"
+        f"📁 Ticket Category: **{ticket_category.name}**\n"
+        f"👥 Staff Role: {staff_role.mention if staff_role else 'Manage Channels'}\n"
+        f"⭐ Vouches: {vouch_channel.mention if vouch_channel else 'Not Updated'}",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="setupstatus",
+    description="Configure only the shop status channel."
+)
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    status_channel="Channel where order status updates will be posted"
+)
+async def setupstatus(
+    interaction: discord.Interaction,
+    status_channel: discord.TextChannel
+):
+
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message(
+            "❌ You need **Administrator** permission to use `/setupstatus`.",
+            ephemeral=True
+        )
+
+    config["status_channel_id"] = status_channel.id
+    save_config(config)
+
+    await interaction.response.send_message(
+        "╭───────────────୨୧\n"
+        "│ **Status Setup Complete! ♡**\n"
+        "╰───────────────୨୧\n\n"
+        f"📊 Status Channel: {status_channel.mention}",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="setupjoins",
+    description="Configure only the welcome, goodbye, and auto-customer role system."
+)
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    welcome_goodbye_channel="Channel where welcome and goodbye messages are sent",
+    customer_role="Role automatically given to members upon joining"
+)
+async def setupjoins(
+    interaction: discord.Interaction,
+    welcome_goodbye_channel: discord.TextChannel,
+    customer_role: discord.Role | None = None
+):
+
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message(
+            "❌ You need **Administrator** permission to use `/setupjoins`.",
+            ephemeral=True
+        )
+
+    config["welcome_goodbye_channel_id"] = welcome_goodbye_channel.id
+    if customer_role:
+        config["customer_role_id"] = customer_role.id
+
+    save_config(config)
+
     cust_role = interaction.guild.get_role(config.get("customer_role_id"))
 
     await interaction.response.send_message(
         "╭───────────────୨୧\n"
-        "│ **Setup Complete! ♡**\n"
+        "│ **Joins Setup Complete! ♡**\n"
         "╰───────────────୨୧\n\n"
-        f"🎫 Panel: {panel_channel.mention}\n"
-        f"📁 Ticket Category: **{ticket_category.name}**\n"
-        f"⭐ Vouches: {vouch_channel.mention}\n"
-        f"📊 Status: {status_channel.mention if status_channel else 'Not Configured'}\n"
-        f"👋 Welcome/Goodbye: {welcome_goodbye_channel.mention if welcome_goodbye_channel else 'Not Configured'}\n"
-        f"👥 Staff Role: {staff_role.mention if staff_role else 'Manage Channels'}\n"
+        f"👋 Welcome/Goodbye Channel: {welcome_goodbye_channel.mention}\n"
         f"🌸 Auto Customer Role: {cust_role.mention if cust_role else 'Not Configured'}",
         ephemeral=True
     )
@@ -756,7 +812,7 @@ async def status(
 
     if not status_channel:
         return await interaction.followup.send(
-            "❌ Status channel not configured! Use `/setup` and include the status channel.",
+            "❌ Status channel not configured! Use `/setupstatus` first.",
             ephemeral=True
         )
 
