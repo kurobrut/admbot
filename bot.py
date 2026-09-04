@@ -155,7 +155,7 @@ def is_staff(interaction: discord.Interaction):
 
 
 # =========================================================
-# TICKET PANEL
+# TICKET PANEL VIEW
 # =========================================================
 
 class TicketView(discord.ui.View):
@@ -269,7 +269,7 @@ class TicketView(discord.ui.View):
 
 
 # =========================================================
-# CLOSE TICKET
+# CLOSE TICKET VIEW
 # =========================================================
 
 class CloseTicketView(discord.ui.View):
@@ -367,7 +367,7 @@ async def on_ready():
         bot.add_view(CloseTicketView())
         bot._persistent_views_loaded = True
 
-    # INSTANT SLASH COMMAND SYNC FOR YOUR SERVER
+    # Sync Slash Commands
     try:
         for guild in bot.guilds:
             bot.tree.copy_global_to(guild=guild)
@@ -379,7 +379,7 @@ async def on_ready():
 
 
 # =========================================================
-# /SETUP
+# SLASH COMMANDS
 # =========================================================
 
 @bot.tree.command(
@@ -448,10 +448,6 @@ async def setup(
     )
 
 
-# =========================================================
-# /TICKETPANEL
-# =========================================================
-
 @bot.tree.command(
     name="ticketpanel",
     description="Send a ticket panel to a selected channel."
@@ -491,10 +487,6 @@ async def ticketpanel(
         ephemeral=True
     )
 
-
-# =========================================================
-# /VOUCH
-# =========================================================
 
 @bot.tree.command(
     name="vouch",
@@ -548,50 +540,6 @@ async def vouch(
     )
 
 
-# =========================================================
-# !VOUCH (PREFIX FALLBACK COMMAND)
-# =========================================================
-
-@bot.command(name="vouch")
-async def vouch_prefix(ctx, *, message: str = None):
-    if message is None:
-        return await ctx.send(
-            "❌ Please include a message! Example: `!vouch Great service!`",
-            delete_after=10
-        )
-
-    channel_id = config.get("vouch_channel_id")
-    channel = ctx.guild.get_channel(channel_id) if channel_id and ctx.guild else None
-
-    if channel is None:
-        return await ctx.send("❌ The vouch channel hasn't been configured yet.")
-
-    embed = discord.Embed(
-        title="୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡",
-        description=f"**{message}**\n\n୨୧ **𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳**\n{ctx.author.mention}\n\nThank you so much! ♡",
-        color=PINK
-    )
-    embed.set_author(name="୨୧ 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦 ♡")
-    embed.set_footer(text="୨୧ ali's adm house • Customer Vouch ♡")
-
-    await channel.send(
-        content=ctx.author.mention,
-        embed=embed,
-        allowed_mentions=discord.AllowedMentions(users=[ctx.author])
-    )
-
-    try:
-        await ctx.message.delete()
-    except discord.Forbidden:
-        pass
-
-    await ctx.send(f"♡ Thank you {ctx.author.mention}, your vouch has been posted! ⭐", delete_after=5)
-
-
-# =========================================================
-# /VOUCHCOUNT
-# =========================================================
-
 @bot.tree.command(
     name="vouchcount",
     description="Check how many vouches a user has submitted."
@@ -639,10 +587,6 @@ async def vouchcount(
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-# =========================================================
-# /PING
-# =========================================================
-
 @bot.tree.command(
     name="ping",
     description="Check the bot's latency and connection status."
@@ -659,10 +603,6 @@ async def ping(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-
-# =========================================================
-# /STATUS
-# =========================================================
 
 @bot.tree.command(
     name="status",
@@ -713,7 +653,6 @@ async def status(
         desc = "Our shop is currently **CLOSED**! ♡\n\nPlease check back later when we reopen!"
         color = GRAY
 
-    # Rename status channel
     try:
         await status_channel.edit(name=channel_name)
     except discord.Forbidden:
@@ -732,10 +671,6 @@ async def status(
         ephemeral=True
     )
 
-
-# =========================================================
-# /SAY
-# =========================================================
 
 @bot.tree.command(
     name="say",
@@ -782,6 +717,46 @@ async def say(
 
 
 # =========================================================
+# PREFIX COMMANDS
+# =========================================================
+
+@bot.command(name="vouch")
+async def vouch_prefix(ctx, *, message: str = None):
+    if message is None:
+        return await ctx.send(
+            "❌ Please include a message! Example: `!vouch Great service!`",
+            delete_after=10
+        )
+
+    channel_id = config.get("vouch_channel_id")
+    channel = ctx.guild.get_channel(channel_id) if channel_id and ctx.guild else None
+
+    if channel is None:
+        return await ctx.send("❌ The vouch channel hasn't been configured yet.")
+
+    embed = discord.Embed(
+        title="୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡",
+        description=f"**{message}**\n\n୨୧ **𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳**\n{ctx.author.mention}\n\nThank you so much! ♡",
+        color=PINK
+    )
+    embed.set_author(name="୨୧ 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦 ♡")
+    embed.set_footer(text="୨୧ ali's adm house • Customer Vouch ♡")
+
+    await channel.send(
+        content=ctx.author.mention,
+        embed=embed,
+        allowed_mentions=discord.AllowedMentions(users=[ctx.author])
+    )
+
+    try:
+        await ctx.message.delete()
+    except discord.Forbidden:
+        pass
+
+    await ctx.send(f"♡ Thank you {ctx.author.mention}, your vouch has been posted! ⭐", delete_after=5)
+
+
+# =========================================================
 # ERROR HANDLER
 # =========================================================
 
@@ -808,15 +783,5 @@ if not TOKEN:
     )
 
 
-# =========================================================
-# START KEEP ALIVE FIRST
-# =========================================================
-
 keep_alive()
-
-
-# =========================================================
-# START DISCORD BOT
-# =========================================================
-
 bot.run(TOKEN)
