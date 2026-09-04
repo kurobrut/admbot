@@ -370,6 +370,8 @@ async def on_ready():
     # INSTANT SLASH COMMAND SYNC FOR YOUR SERVER
     try:
         for guild in bot.guilds:
+            # Sync commands to the specific guild tree instantly
+            bot.tree.copy_global_to(guild=guild)
             synced = await bot.tree.sync(guild=guild)
             print(f"Synced {len(synced)} command(s) to guild: {guild.name} ({guild.id})")
 
@@ -385,6 +387,7 @@ async def on_ready():
     name="setup",
     description="Configure the ticket and vouch system."
 )
+@app_commands.default_permissions(administrator=True)
 @app_commands.describe(
     panel_channel="Channel where the ticket panel will be sent",
     ticket_category="Category where new tickets will be created",
@@ -494,6 +497,7 @@ async def ticketpanel(
     name="vouch",
     description="Leave a vouch for ali's adm house."
 )
+@app_commands.default_permissions(send_messages=True)
 @app_commands.describe(
     message="Your vouch message"
 )
