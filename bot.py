@@ -626,7 +626,6 @@ async def status(
             ephemeral=True
         )
 
-    # Acknowledge immediately to avoid timing out
     await interaction.response.defer(ephemeral=True)
 
     status_channel_id = config.get("status_channel_id")
@@ -667,15 +666,17 @@ async def status(
 
     await status_channel.send(embed=embed)
 
-    try:
-        await status_channel.edit(name=channel_name)
-    except Exception as e:
-        print(f"Could not rename channel: {e}")
-
     await interaction.followup.send(
         f"♡ Shop status updated to **{state.name}** in {status_channel.mention}!",
         ephemeral=True
     )
+
+    # Attempts to rename the channel safely in background without freezing command execution
+    if status_channel.name != channel_name:
+        try:
+            await asyncio.wait_for(status_channel.edit(name=channel_name), timeout=2.0)
+        except (asyncio.TimeoutError, Exception):
+            print("Channel rename deferred/skipped due to Discord rate limits.")
 
 
 @bot.tree.command(
