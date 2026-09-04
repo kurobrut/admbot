@@ -714,7 +714,6 @@ async def ticketpanel(
     name="vouch",
     description="Leave a vouch for ali's adm house."
 )
-@app_commands.default_permissions(send_messages=True)
 @app_commands.describe(
     message="Your vouch message"
 )
