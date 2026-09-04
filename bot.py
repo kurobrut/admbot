@@ -318,7 +318,8 @@ class TicketView(discord.ui.View):
 
         embed = discord.Embed(
 
-            title="୨୧・𝘵𝘪𝘤𝘬𝘦𝘵 𝘰𝘱𝘦𝘯𝘦𝘥 ♡",
+            title="୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 "
+            "𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
 
             description=(
 
@@ -787,11 +788,10 @@ async def vouch(
     )
 
     # ---------------------------------------------
-    # SEND VOUCH WITH USER MENTION
+    # SEND VOUCH (EMBED ONLY)
     # ---------------------------------------------
 
     await channel.send(
-        content=f"<@{interaction.user.id}>",
         embed=embed,
         allowed_mentions=discord.AllowedMentions(
             users=[interaction.user]
