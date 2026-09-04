@@ -187,7 +187,7 @@ async def process_channel_renames():
 
 
 # =========================================================
-# WELCOME & GOODBYE EVENTS (AUTO ROLE INCLUDED)
+# WELCOME & GOODBYE EVENTS (DECORATED EMBEDS)
 # =========================================================
 
 @bot.event
@@ -200,7 +200,7 @@ async def on_member_join(member: discord.Member):
             try:
                 await member.add_roles(role, reason="Automatic customer role on join")
             except discord.Forbidden:
-                print(f"Failed to add role {role.name} to {member.name}: Bot lacks permissions or role is above bot's highest role.")
+                print(f"Failed to add role {role.name} to {member.name}: Lacks permissions.")
             except Exception as e:
                 print(f"Error assigning customer role: {e}")
 
@@ -213,21 +213,49 @@ async def on_member_join(member: discord.Member):
     if not channel:
         return
 
+    # Highly Decorated Welcome Embed
     embed = discord.Embed(
-        title="୨୧・𝘸𝘦𝘭𝘤𝘰𝘮𝘦 𝘵𝘰 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦! ♡",
+        title="╭───────────── ୨୧ ─────────────╮\n       🌸˚₊ 𝘸𝘦𝘭𝘤𝘰𝘮𝘦 𝘵𝘰 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦! ♡\n╰───────────── ୨୧ ─────────────╯",
         description=(
-            f"Welcome {member.mention}! 🌸\n\n"
-            "We are super happy to have you here! ♡\n"
-            "Feel free to check out our shop, open a ticket for custom orders, or chat with the community!\n\n"
-            f"୨୧ **Member Count:** `#{member.guild.member_count}`"
+            f" Welcome {member.mention}! We are so thrilled to have you join our community! ♡\n\n"
+            "✦ **Getting Started:**\n"
+            " Check out our products and shop listings!\n"
+            " Open a support ticket to place custom orders or ask questions!\n"
+            " Feel free to hang out and chat with our lovely members!\n\n"
+            "─────────────── ୨୧ ───────────────"
         ),
         color=PINK
     )
+    
+    # User Profile Thumbnail & Custom Banner Image
     embed.set_thumbnail(url=member.display_avatar.url)
-    embed.set_footer(text="ali's adm house • Welcome ♡")
+    
+    # Dedicated Info Fields
+    embed.add_field(
+        name="🌸˚₊ Customer", 
+        value=f"• {member.mention}", 
+        inline=True
+    )
+    embed.add_field(
+        name="⭐˚₊ Member Count", 
+        value=f"• `#{member.guild.member_count}`", 
+        inline=True
+    )
+    embed.add_field(
+        name="✨˚₊ Account Created", 
+        value=f"• <t:{int(member.created_at.timestamp())}:R>", 
+        inline=False
+    )
+    
+    # Soft aesthetic anime/pink divider GIF (Replace URL with any banner image link if desired)
+    embed.set_image(url="https://media.tenor.com/264pYc0nE40AAAAC/anime-aesthetic.gif")
+    embed.set_footer(
+        text="ali's adm house • Customer Shop ♡",
+        icon_url=member.guild.icon.url if member.guild.icon else None
+    )
 
     await channel.send(
-        content=f"Welcome {member.mention}! ♡",
+        content=f"👋 Welcome to the server {member.mention}! ♡",
         embed=embed,
         allowed_mentions=discord.AllowedMentions(users=[member])
     )
@@ -243,17 +271,35 @@ async def on_member_remove(member: discord.Member):
     if not channel:
         return
 
+    # Highly Decorated Goodbye Embed
     embed = discord.Embed(
-        title="୨୧・𝘨𝘰𝘰𝘥𝘣𝘺𝘦 ♡",
+        title="╭───────────── ୨୧ ─────────────╮\n            💔˚₊ 𝘨𝘰𝘰𝘥𝘣𝘺𝘦, 𝘴𝘦𝘦 𝘺𝘰𝘶 𝘴𝘰𝘰𝘯! ♡\n╰───────────── ୨୧ ─────────────╯",
         description=(
-            f"**{member.name}** has left the server... 💔\n\n"
-            "We hope to see you again soon at **ali's adm house**! ♡\n\n"
-            f"୨୧ **Member Count:** `{member.guild.member_count}`"
+            f"**{member.name}** has left **ali's adm house**... 💔\n\n"
+            "We're sad to see you leave, but we hope to see you back again soon! ♡\n\n"
+            "─────────────── ୨୧ ───────────────"
         ),
         color=GRAY
     )
+    
     embed.set_thumbnail(url=member.display_avatar.url)
-    embed.set_footer(text="ali's adm house • Goodbye ♡")
+    embed.add_field(
+        name="🌸˚₊ User", 
+        value=f"• **{member.name}**", 
+        inline=True
+    )
+    embed.add_field(
+        name="⭐˚₊ Remaining Members", 
+        value=f"• `{member.guild.member_count}`", 
+        inline=True
+    )
+    
+    # Cute goodbye banner image
+    embed.set_image(url="https://media.tenor.com/E694tZ914x8AAAAC/anime-sad.gif")
+    embed.set_footer(
+        text="ali's adm house • Member Departure ♡",
+        icon_url=member.guild.icon.url if member.guild.icon else None
+    )
 
     await channel.send(embed=embed)
 
