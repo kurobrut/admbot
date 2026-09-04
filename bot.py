@@ -350,8 +350,7 @@ class TicketView(discord.ui.View):
                 "Thank you for contacting **ali's adm house**!\n\n"
                 "Please tell us what you need help with.\n\n"
                 "୨୧ **House:**\n"
-                "୨୧ **Build type:**\n"
-                "୨୧ **Special requests:**\n\n"
+                "୨୧ **Build type:**\n\n"
                 "A staff member will be with you shortly. ♡"
             ),
             color=PINK
@@ -719,17 +718,9 @@ async def vouch(
 
 @bot.tree.command(
     name="vouchcount",
-    description="Check how many vouches a user has submitted."
+    description="Check the total overall number of vouches in the server."
 )
-@app_commands.describe(
-    user="The user to check vouches for (defaults to you)"
-)
-async def vouchcount(
-    interaction: discord.Interaction,
-    user: discord.Member | None = None
-):
-
-    target_user = user or interaction.user
+async def vouchcount(interaction: discord.Interaction):
     vouch_channel_id = config.get("vouch_channel_id")
     vouch_channel = (
         interaction.guild.get_channel(vouch_channel_id)
@@ -746,20 +737,19 @@ async def vouchcount(
     await interaction.response.defer(ephemeral=True)
 
     count = 0
-    async for message in vouch_channel.history(limit=500):
+    async for message in vouch_channel.history(limit=None):
         if message.author == bot.user:
-            if target_user in message.mentions or str(target_user.id) in message.content:
-                count += 1
+            count += 1
 
     embed = discord.Embed(
-        title="୨୧・𝘷𝘰𝘶𝘤𝘩 𝘤𝘰𝘶𝘯𝘵 ♡",
+        title="୨୧・𝘰𝘷𝘦𝘳𝘢𝘭𝘭 𝘷𝘰𝘶𝘤𝘩 𝘤𝘰𝘶𝘯𝘵 ♡",
         description=(
-            f"**{target_user.mention}** currently has **{count}** total vouch(es)! ⭐\n\n"
-            "Thank you for supporting **ali's adm house**! ♡"
+            f"**ali's adm house** currently has **{count}** total vouch(es)! ⭐\n\n"
+            "Thank you to all our amazing customers! ♡"
         ),
         color=PINK
     )
-    embed.set_footer(text="ali's adm house • Customer Statistics ♡")
+    embed.set_footer(text="ali's adm house • Server Statistics ♡")
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
