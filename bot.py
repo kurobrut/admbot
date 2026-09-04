@@ -787,13 +787,12 @@ async def vouch(
     )
 
     # ---------------------------------------------
-    # SEND VOUCH
+    # SEND VOUCH WITH USER MENTION
     # ---------------------------------------------
 
     await channel.send(
-
+        content=f"<@{interaction.user.id}>",
         embed=embed,
-
         allowed_mentions=discord.AllowedMentions(
             users=[interaction.user]
         )
@@ -829,6 +828,10 @@ async def vouch(
 
     message=(
         "Message to send"
+    ),
+
+    role=(
+        "Optional role to ping for the announcement"
     )
 )
 async def say(
@@ -837,7 +840,9 @@ async def say(
 
     channel: discord.TextChannel,
 
-    message: str
+    message: str,
+
+    role: discord.Role | None = None
 
 ):
 
@@ -875,8 +880,14 @@ async def say(
     # SEND ANNOUNCEMENT
     # ---------------------------------------------
 
+    content_text = role.mention if role else None
+
     await channel.send(
-        embed=embed
+        content=content_text,
+        embed=embed,
+        allowed_mentions=discord.AllowedMentions(
+            roles=True
+        )
     )
 
     await interaction.response.send_message(
