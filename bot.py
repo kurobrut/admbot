@@ -757,7 +757,9 @@ async def vouch(
 
             "୨୧ **𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳**\n"
 
-            f"{interaction.user.mention}"
+            f"{interaction.user.mention}\n\n"
+
+            "Thank you so much! ♡"
         ),
 
         color=PINK
@@ -788,10 +790,11 @@ async def vouch(
     )
 
     # ---------------------------------------------
-    # SEND VOUCH (EMBED ONLY)
+    # SEND VOUCH (PING OUTSIDE EMBED)
     # ---------------------------------------------
 
     await channel.send(
+        content=interaction.user.mention,
         embed=embed,
         allowed_mentions=discord.AllowedMentions(
             users=[interaction.user]
