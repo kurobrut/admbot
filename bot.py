@@ -420,7 +420,7 @@ async def setup(
     save_config(config)
 
     embed = discord.Embed(
-        title="抓・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
+        title="୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
         description=(
             "Need help with an order?\n"
             "Want to ask about one of our houses?\n\n"
@@ -626,6 +626,9 @@ async def status(
             ephemeral=True
         )
 
+    # Acknowledge immediately to avoid timing out
+    await interaction.response.defer(ephemeral=True)
+
     status_channel_id = config.get("status_channel_id")
     status_channel = (
         interaction.guild.get_channel(status_channel_id)
@@ -634,7 +637,7 @@ async def status(
     )
 
     if not status_channel:
-        return await interaction.response.send_message(
+        return await interaction.followup.send(
             "❌ Status channel not configured! Use `/setup` and include the status channel.",
             ephemeral=True
         )
@@ -655,11 +658,6 @@ async def status(
         desc = "Our shop is currently **CLOSED**! ♡\n\nPlease check back later when we reopen!"
         color = GRAY
 
-    try:
-        await status_channel.edit(name=channel_name)
-    except discord.Forbidden:
-        pass
-
     embed = discord.Embed(
         title=title,
         description=desc,
@@ -668,7 +666,13 @@ async def status(
     embed.set_footer(text="ali's adm house • Shop Status ♡")
 
     await status_channel.send(embed=embed)
-    await interaction.response.send_message(
+
+    try:
+        await status_channel.edit(name=channel_name)
+    except Exception as e:
+        print(f"Could not rename channel: {e}")
+
+    await interaction.followup.send(
         f"♡ Shop status updated to **{state.name}** in {status_channel.mention}!",
         ephemeral=True
     )
