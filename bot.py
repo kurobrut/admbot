@@ -37,7 +37,7 @@ config = load_config()
 
 
 # =========================================================
-# BOT SETUP
+# BOT
 # =========================================================
 
 intents = discord.Intents.default()
@@ -50,8 +50,15 @@ bot = commands.Bot(
 )
 
 
-# Pink theme
-PINK = discord.Color.from_rgb(255, 143, 194)
+# =========================================================
+# COLORS
+# =========================================================
+
+PINK = discord.Color.from_rgb(
+    255,
+    143,
+    194
+)
 
 
 # =========================================================
@@ -59,6 +66,7 @@ PINK = discord.Color.from_rgb(255, 143, 194)
 # =========================================================
 
 def styled_embed(title, description):
+
     embed = discord.Embed(
         title=title,
         description=description,
@@ -78,31 +86,41 @@ def styled_embed(title, description):
 
 def is_staff(interaction: discord.Interaction):
 
-    # Server administrator
+    # Administrator
     if interaction.user.guild_permissions.administrator:
         return True
 
-    staff_role_id = config.get("staff_role_id")
+    staff_role_id = config.get(
+        "staff_role_id"
+    )
 
-    # No staff role configured
+    # If no staff role is configured,
+    # require Manage Channels.
     if not staff_role_id:
         return interaction.user.guild_permissions.manage_channels
 
     # Check staff role
     return any(
         role.id == staff_role_id
-        for role in getattr(interaction.user, "roles", [])
+        for role in getattr(
+            interaction.user,
+            "roles",
+            []
+        )
     )
 
 
 # =========================================================
-# TICKET OPEN BUTTON
+# TICKET PANEL
 # =========================================================
 
 class TicketView(discord.ui.View):
 
     def __init__(self):
-        super().__init__(timeout=None)
+
+        super().__init__(
+            timeout=None
+        )
 
 
     @discord.ui.button(
@@ -123,27 +141,40 @@ class TicketView(discord.ui.View):
             return
 
 
-        # Get ticket category
-        category_id = config.get("ticket_category_id")
+        # ---------------------------------------------
+        # GET CATEGORY
+        # ---------------------------------------------
+
+        category_id = config.get(
+            "ticket_category_id"
+        )
 
         category = (
-            guild.get_channel(category_id)
+            guild.get_channel(
+                category_id
+            )
             if category_id
             else None
         )
 
 
-        if not category:
+        if category is None:
+
             return await interaction.response.send_message(
                 "❌ The ticket category hasn't been configured yet.",
                 ephemeral=True
             )
 
 
-        # Check if user already has a ticket
+        # ---------------------------------------------
+        # CHECK EXISTING TICKET
+        # ---------------------------------------------
+
         for channel in guild.text_channels:
 
-            if channel.topic == f"ali_adm_ticket:{interaction.user.id}":
+            if channel.topic == (
+                f"ali_adm_ticket:{interaction.user.id}"
+            ):
 
                 return await interaction.response.send_message(
                     f"❌ You already have an open ticket: {channel.mention}",
@@ -151,16 +182,27 @@ class TicketView(discord.ui.View):
                 )
 
 
-        # Staff role
+        # ---------------------------------------------
+        # STAFF ROLE
+        # ---------------------------------------------
+
         staff_role = None
 
-        staff_role_id = config.get("staff_role_id")
+        staff_role_id = config.get(
+            "staff_role_id"
+        )
 
         if staff_role_id:
-            staff_role = guild.get_role(staff_role_id)
+
+            staff_role = guild.get_role(
+                staff_role_id
+            )
 
 
-        # Permissions
+        # ---------------------------------------------
+        # PERMISSIONS
+        # ---------------------------------------------
+
         overwrites = {
 
             guild.default_role:
@@ -182,74 +224,127 @@ class TicketView(discord.ui.View):
         # Staff permissions
         if staff_role:
 
-            overwrites[staff_role] = discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                manage_channels=True,
-                attach_files=True,
-                embed_links=True
+            overwrites[staff_role] = (
+                discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                    manage_channels=True,
+                    attach_files=True,
+                    embed_links=True
+                )
             )
 
 
-        # Create ticket
-        ticket_channel = await guild.create_text_channel(
+        # ---------------------------------------------
+        # CREATE TICKET
+        # ---------------------------------------------
 
-            name=f"ticket-{interaction.user.name}".lower()[:90],
+        username = interaction.user.name.lower()
 
-            category=category,
+        username = (
+            username
+            .replace(" ", "-")
+            .replace("_", "-")
+        )
 
-            overwrites=overwrites,
+        ticket_name = (
+            f"ticket-{username}"
+        )[:90]
 
-            topic=f"ali_adm_ticket:{interaction.user.id}"
+
+        ticket_channel = (
+            await guild.create_text_channel(
+
+                name=ticket_name,
+
+                category=category,
+
+                overwrites=overwrites,
+
+                topic=(
+                    f"ali_adm_ticket:"
+                    f"{interaction.user.id}"
+                )
+            )
         )
 
 
-        # Ticket embed
+        # ---------------------------------------------
+        # TICKET EMBED
+        # ---------------------------------------------
+
         embed = discord.Embed(
+
             title="୨୧・𝒯𝒾𝒸𝓀𝑒𝓉 𝒪𝓅𝑒𝓃𝑒𝒹 ♡",
+
             description=(
+
                 f"Welcome {interaction.user.mention}! ♡\n\n"
 
-                "Please tell us what you need help with.\n"
-                "If you're ordering a house, please include:\n\n"
+                "Thank you for contacting "
+                "**ali's adm house**!\n\n"
+
+                "Please tell us what you need help with.\n\n"
 
                 "୨୧ **House:**\n"
                 "୨୧ **Build type:**\n"
-                "୨୧ **Any special requests:**\n\n"
+                "୨୧ **Special requests:**\n\n"
 
                 "A staff member will be with you shortly. ♡"
             ),
+
             color=PINK
         )
+
 
         embed.set_footer(
             text="ali's adm house • Support Tickets ♡"
         )
 
 
-        # Send ticket message
+        # ---------------------------------------------
+        # SEND TICKET MESSAGE
+        # ---------------------------------------------
+
         await ticket_channel.send(
+
             content=interaction.user.mention,
+
             embed=embed,
-            view=CloseTicketView()
+
+            view=CloseTicketView(),
+
+            allowed_mentions=discord.AllowedMentions(
+                users=[interaction.user]
+            )
         )
 
 
+        # ---------------------------------------------
+        # CONFIRMATION
+        # ---------------------------------------------
+
         await interaction.response.send_message(
-            f"🎫 Your ticket has been created: {ticket_channel.mention}",
+
+            f"🎫 Your ticket has been created: "
+            f"{ticket_channel.mention}",
+
             ephemeral=True
         )
 
 
 # =========================================================
-# CLOSE TICKET BUTTON
+# CLOSE TICKET
 # =========================================================
 
 class CloseTicketView(discord.ui.View):
 
     def __init__(self):
-        super().__init__(timeout=None)
+
+        super().__init__(
+            timeout=None
+        )
 
 
     @discord.ui.button(
@@ -281,7 +376,10 @@ class CloseTicketView(discord.ui.View):
 
 
         await interaction.channel.delete(
-            reason=f"Ticket closed by {interaction.user}"
+            reason=(
+                f"Ticket closed by "
+                f"{interaction.user}"
+            )
         )
 
 
@@ -292,9 +390,14 @@ class CloseTicketView(discord.ui.View):
 @bot.event
 async def on_ready():
 
-    # Register persistent buttons
-    bot.add_view(TicketView())
-    bot.add_view(CloseTicketView())
+    # Persistent buttons
+    bot.add_view(
+        TicketView()
+    )
+
+    bot.add_view(
+        CloseTicketView()
+    )
 
 
     try:
@@ -326,13 +429,25 @@ async def on_ready():
 )
 @app_commands.describe(
 
-    panel_channel="Channel where the ticket panel will be sent",
+    panel_channel=(
+        "Channel where the ticket panel "
+        "will be sent"
+    ),
 
-    ticket_category="Category where new tickets will be created",
+    ticket_category=(
+        "Category where new tickets "
+        "will be created"
+    ),
 
-    vouch_channel="Channel where /vouch messages will be posted",
+    vouch_channel=(
+        "Channel where /vouch messages "
+        "will be posted"
+    ),
 
-    staff_role="Staff role that can manage tickets and /say"
+    staff_role=(
+        "Staff role allowed to manage "
+        "tickets and /say"
+    )
 )
 async def setup(
 
@@ -345,47 +460,78 @@ async def setup(
     vouch_channel: discord.TextChannel,
 
     staff_role: discord.Role | None = None
+
 ):
 
 
-    # Admin only
+    # ---------------------------------------------
+    # ADMIN CHECK
+    # ---------------------------------------------
+
     if not interaction.user.guild_permissions.administrator:
 
         return await interaction.response.send_message(
-            "❌ You need Administrator permission to use `/setup`.",
+
+            "❌ You need **Administrator** permission "
+            "to use `/setup`.",
+
             ephemeral=True
         )
 
 
-    # Save configuration
-    config["panel_channel_id"] = panel_channel.id
+    # ---------------------------------------------
+    # SAVE CONFIG
+    # ---------------------------------------------
 
-    config["ticket_category_id"] = ticket_category.id
+    config["panel_channel_id"] = (
+        panel_channel.id
+    )
 
-    config["vouch_channel_id"] = vouch_channel.id
+    config["ticket_category_id"] = (
+        ticket_category.id
+    )
+
+    config["vouch_channel_id"] = (
+        vouch_channel.id
+    )
 
     config["staff_role_id"] = (
+
         staff_role.id
+
         if staff_role
+
         else None
     )
 
-    save_config(config)
+
+    save_config(
+        config
+    )
 
 
-    # Ticket panel embed
+    # ---------------------------------------------
+    # TICKET PANEL EMBED
+    # ---------------------------------------------
+
     embed = discord.Embed(
 
-        title="୨୧・𝒮𝓊𝓅𝓅𝑜𝓇𝓉 𝒯𝒾𝒸𝓀𝑒𝓉𝓈 ♡",
+        title=(
+            "୨୧・𝒮𝓊𝓅𝓅𝑜𝓇𝓉 "
+            "𝒯𝒾𝒸𝓀𝑒𝓉𝓈 ♡"
+        ),
 
         description=(
+
             "Need help with an order?\n"
             "Want to ask about one of our houses?\n\n"
 
-            "Open a private ticket below and our staff "
-            "will help you! ♡\n\n"
+            "Click **🎫 Open Ticket** below "
+            "to create a private ticket with "
+            "our staff! ♡\n\n"
 
-            "୨୧ Please provide as much information as possible."
+            "୨୧ Please provide as much "
+            "information as possible."
         ),
 
         color=PINK
@@ -397,24 +543,39 @@ async def setup(
     )
 
 
-    # Send panel
+    # ---------------------------------------------
+    # SEND PANEL
+    # ---------------------------------------------
+
     await panel_channel.send(
+
         embed=embed,
+
         view=TicketView()
     )
 
 
-    # Confirmation
+    # ---------------------------------------------
+    # CONFIRM
+    # ---------------------------------------------
+
     await interaction.response.send_message(
 
         "╭───────────────୨୧\n"
         "│ **Setup Complete! ♡**\n"
         "╰───────────────୨୧\n\n"
 
-        f"🎫 Panel: {panel_channel.mention}\n"
-        f"📁 Ticket Category: **{ticket_category.name}**\n"
-        f"⭐ Vouches: {vouch_channel.mention}\n"
-        f"👥 Staff: {staff_role.mention if staff_role else 'Manage Channels permission'}",
+        f"🎫 Panel: "
+        f"{panel_channel.mention}\n"
+
+        f"📁 Ticket Category: "
+        f"**{ticket_category.name}**\n"
+
+        f"⭐ Vouches: "
+        f"{vouch_channel.mention}\n"
+
+        f"👥 Staff: "
+        f"{staff_role.mention if staff_role else 'Manage Channels'}",
 
         ephemeral=True
     )
@@ -429,28 +590,43 @@ async def setup(
     description="Send a ticket panel to a selected channel."
 )
 @app_commands.describe(
-    channel="Channel where the ticket panel should be sent"
+
+    channel=(
+        "Channel where the ticket panel "
+        "should be sent"
+    )
 )
 async def ticketpanel(
+
     interaction: discord.Interaction,
+
     channel: discord.TextChannel
+
 ):
 
 
     if not is_staff(interaction):
 
         return await interaction.response.send_message(
-            "❌ You need staff permissions to use this.",
+
+            "❌ You need staff permissions "
+            "to use this command.",
+
             ephemeral=True
         )
 
 
     embed = discord.Embed(
 
-        title="୨୧・𝒮𝓊𝓅𝓅𝑜𝓇𝓉 𝒯𝒾𝒸𝓀𝑒𝓉𝓈 ♡",
+        title=(
+            "୨୧・𝒮𝓊𝓅𝓅𝑜𝓇𝓉 "
+            "𝒯𝒾𝒸𝓀𝑒𝓉𝓈 ♡"
+        ),
 
         description=(
+
             "Need help? ♡\n\n"
+
             "Click **🎫 Open Ticket** below "
             "to create a private ticket."
         ),
@@ -465,13 +641,18 @@ async def ticketpanel(
 
 
     await channel.send(
+
         embed=embed,
+
         view=TicketView()
     )
 
 
     await interaction.response.send_message(
-        f"🎫 Ticket panel sent to {channel.mention}.",
+
+        f"🎫 Ticket panel sent to "
+        f"{channel.mention}.",
+
         ephemeral=True
     )
 
@@ -488,44 +669,67 @@ async def ticketpanel(
     message="Your vouch message"
 )
 async def vouch(
+
     interaction: discord.Interaction,
+
     message: str
+
 ):
 
 
-    # Get configured vouch channel
-    channel_id = config.get("vouch_channel_id")
+    # ---------------------------------------------
+    # GET VOUCH CHANNEL
+    # ---------------------------------------------
+
+    channel_id = config.get(
+        "vouch_channel_id"
+    )
+
 
     channel = (
-        interaction.guild.get_channel(channel_id)
+
+        interaction.guild.get_channel(
+            channel_id
+        )
+
         if channel_id
+
         else None
     )
 
 
-    if not channel:
+    if channel is None:
 
         return await interaction.response.send_message(
 
-            "❌ The vouch channel hasn't been configured yet.\n"
-            "Ask an administrator to use `/setup`.",
+            "❌ The vouch channel hasn't "
+            "been configured yet.\n\n"
+
+            "Ask an administrator to use "
+            "`/setup`.",
 
             ephemeral=True
         )
 
 
-    # -----------------------------------------------------
+    # ---------------------------------------------
     # VOUCH EMBED
-    # -----------------------------------------------------
+    # ---------------------------------------------
 
     embed = discord.Embed(
 
-        title="୨୧・𝒩𝐸𝒲 𝒞𝒰𝒮𝒯𝒪𝑀𝐸𝑅 𝒱𝒪𝒰𝒞𝐻 ♡",
+        title=(
+            "୨୧・𝒩𝐸𝒲 "
+            "𝒞𝒰𝒮𝒯𝒪𝑀𝐸𝑅 "
+            "𝒱𝒪𝒰𝒞𝐻 ♡"
+        ),
 
         description=(
+
             f"**{message}**\n\n"
 
             "୨୧ **𝒞𝓊𝓈𝓉𝑜𝓂𝑒𝓇**\n"
+
             f"{interaction.user.mention}"
         ),
 
@@ -533,47 +737,56 @@ async def vouch(
     )
 
 
-    # Customer avatar + decorative font
+    # ---------------------------------------------
+    # SHOP AUTHOR
+    # ---------------------------------------------
+
     embed.set_author(
 
         name=(
-            f"୨୧ 𝒜𝓁𝒾'𝓈 𝒜𝒟𝑀 𝐻𝑜𝓊𝓈𝑒 ♡"
-        ),
-
-        icon_url=interaction.user.display_avatar.url
-    )
-
-
-    # Customer information
-    embed.add_field(
-
-        name="♡ 𝒱𝑜𝓊𝒸𝒽𝑒𝒹 𝐵𝓎",
-
-        value=interaction.user.mention,
-
-        inline=False
-    )
-
-
-    # Footer
-    embed.set_footer(
-
-        text=(
-            "୨୧ ali's adm house • Customer Vouch ♡"
+            "୨୧ 𝒜𝓁𝒾'𝓈 "
+            "𝒜𝒟𝑀 𝐻𝑜𝓊𝓈𝑒 ♡"
         )
     )
 
 
-    # Send vouch
-    await channel.send(
-        embed=embed
+    # ---------------------------------------------
+    # FOOTER
+    # ---------------------------------------------
+
+    embed.set_footer(
+
+        text=(
+            "୨୧ ali's adm house "
+            "• Customer Vouch ♡"
+        )
     )
 
 
-    # Private confirmation
+    # ---------------------------------------------
+    # SEND VOUCH
+    # ---------------------------------------------
+
+    await channel.send(
+
+        embed=embed,
+
+        # This allows the actual user mention
+        # inside the embed to ping them.
+        allowed_mentions=discord.AllowedMentions(
+            users=[interaction.user]
+        )
+    )
+
+
+    # ---------------------------------------------
+    # CONFIRMATION
+    # ---------------------------------------------
+
     await interaction.response.send_message(
 
-        "♡ Your vouch has been posted! Thank you! ⭐",
+        "♡ Your vouch has been posted! "
+        "Thank you! ⭐",
 
         ephemeral=True
     )
@@ -589,9 +802,14 @@ async def vouch(
 )
 @app_commands.describe(
 
-    channel="Channel where the message should be sent",
+    channel=(
+        "Channel where the message "
+        "should be sent"
+    ),
 
-    message="Message to send"
+    message=(
+        "Message to send"
+    )
 )
 async def say(
 
@@ -600,21 +818,29 @@ async def say(
     channel: discord.TextChannel,
 
     message: str
+
 ):
 
 
     if not is_staff(interaction):
 
         return await interaction.response.send_message(
+
             "❌ Only staff can use `/say`.",
+
             ephemeral=True
         )
 
 
-    # Styled announcement
+    # ---------------------------------------------
+    # ANNOUNCEMENT EMBED
+    # ---------------------------------------------
+
     embed = discord.Embed(
 
-        title="୨୧・𝒜𝓃𝓃𝑜𝓊𝓃𝒸𝑒𝓂𝑒𝓃𝓉 ♡",
+        title=(
+            "୨୧・𝒜𝓃𝓃𝑜𝓊𝓃𝒸𝑒𝓂𝑒𝓃𝓉 ♡"
+        ),
 
         description=message,
 
@@ -623,7 +849,11 @@ async def say(
 
 
     embed.set_footer(
-        text="୨୧ ali's adm house • Announcements ♡"
+
+        text=(
+            "୨୧ ali's adm house "
+            "• Announcements ♡"
+        )
     )
 
 
@@ -634,25 +864,36 @@ async def say(
 
     await interaction.response.send_message(
 
-        f"♡ Message sent to {channel.mention}.",
+        f"♡ Message sent to "
+        f"{channel.mention}.",
 
         ephemeral=True
     )
 
 
 # =========================================================
-# START BOT
+# RUN BOT
 # =========================================================
 
-TOKEN = os.getenv("DISCORD_TOKEN")
+TOKEN = os.getenv(
+    "DISCORD_TOKEN"
+)
 
 
 if not TOKEN:
 
     raise RuntimeError(
-        "DISCORD_TOKEN is not set. "
-        "Set your Discord bot token as an environment variable."
+
+        "DISCORD_TOKEN is not set.\n\n"
+
+        "Windows PowerShell:\n"
+
+        '$env:DISCORD_TOKEN="YOUR_BOT_TOKEN"\n'
+
+        "python bot.py"
     )
 
 
-bot.run(TOKEN)
+bot.run(
+    TOKEN
+)
