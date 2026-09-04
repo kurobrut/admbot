@@ -318,7 +318,7 @@ class TicketView(discord.ui.View):
 
         embed = discord.Embed(
 
-            title="୨୧・𝒯𝒾𝒸𝓀𝑒𝓉 𝒪𝓅𝑒𝓃𝑒𝒹 ♡",
+            title="୨୧・𝘵𝘪𝘤𝘬𝘦𝘵 𝘰𝘱𝘦𝘯𝘦𝘥 ♡",
 
             description=(
 
@@ -555,8 +555,8 @@ async def setup(
     embed = discord.Embed(
 
         title=(
-            "୨୧・𝒮𝓊𝓅𝓅𝑜𝓇𝓉 "
-            "𝒯𝒾𝒸𝓀𝑒𝓉𝓈 ♡"
+            "୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 "
+            "𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡"
         ),
 
         description=(
@@ -652,8 +652,8 @@ async def ticketpanel(
     embed = discord.Embed(
 
         title=(
-            "୨୧・𝒮𝓊𝓅𝓅𝑜𝓇𝓉 "
-            "𝒯𝒾𝒸𝓀𝑒𝓉𝓈 ♡"
+            "୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 "
+            "𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡"
         ),
 
         description=(
@@ -745,16 +745,16 @@ async def vouch(
     embed = discord.Embed(
 
         title=(
-            "୨୧・𝒩𝐸𝒲 "
-            "𝒞𝒰𝒮𝒯𝒪𝑀𝐸𝑅 "
-            "𝒱𝒪𝒰𝒞𝐻 ♡"
+            "୨୧・𝘯𝘦𝘸 "
+            "𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 "
+            "𝘷𝘰𝘶𝘤𝘩 ♡"
         ),
 
         description=(
 
             f"**{message}**\n\n"
 
-            "୨୧ **𝒞𝓊𝓈𝓉𝑜𝓂𝑒𝓇**\n"
+            "୨୧ **𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳**\n"
 
             f"{interaction.user.mention}"
         ),
@@ -769,8 +769,8 @@ async def vouch(
     embed.set_author(
 
         name=(
-            "୨୧ 𝒜𝓁𝒾'𝓈 "
-            "𝒜𝒟𝑀 𝐻𝑜𝓊𝓈𝑒 ♡"
+            "୨୧ 𝘢𝘭𝘪'𝘴 "
+            "𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦 ♡"
         )
     )
 
