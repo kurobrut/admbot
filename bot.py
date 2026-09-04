@@ -353,12 +353,11 @@ class CloseTicketView(discord.ui.View):
 
 
 # =========================================================
-# BOT READY
+# BOT READY (WITH DUPLICATE CLEANUP)
 # =========================================================
 
 @bot.event
 async def on_ready():
-
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
     # Persistent buttons
@@ -367,12 +366,15 @@ async def on_ready():
         bot.add_view(CloseTicketView())
         bot._persistent_views_loaded = True
 
-    # Sync Slash Commands
     try:
+        # 1. Clear guild-level overrides to remove duplicate commands
         for guild in bot.guilds:
-            bot.tree.copy_global_to(guild=guild)
-            synced = await bot.tree.sync(guild=guild)
-            print(f"Synced {len(synced)} command(s) to guild: {guild.name} ({guild.id})")
+            bot.tree.clear_commands(guild=guild)
+            await bot.tree.sync(guild=guild)
+
+        # 2. Global sync
+        synced = await bot.tree.sync()
+        print(f"Successfully cleared duplicates and synced {len(synced)} command(s) globally!")
 
     except Exception as error:
         print(f"Command sync error: {error}")
@@ -418,7 +420,7 @@ async def setup(
     save_config(config)
 
     embed = discord.Embed(
-        title="୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
+        title="抓・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
         description=(
             "Need help with an order?\n"
             "Want to ask about one of our houses?\n\n"
