@@ -49,26 +49,33 @@ def keep_alive():
 
 
 # =========================================================
-# CONFIG
+# CONFIG (PERSISTENT HARDCODED / ENV FALLBACKS)
 # =========================================================
 
 CONFIG_FILE = "config.json"
 
+# Replace these numbers with your actual Discord IDs so they survive bot restarts!
 DEFAULT_CONFIG = {
-    "panel_channel_id": None,
-    "ticket_category_id": None,
-    "vouch_channel_id": None,
-    "staff_role_id": None
+    "panel_channel_id": int(os.getenv("PANEL_CHANNEL_ID", 0)) or None,
+    "ticket_category_id": int(os.getenv("TICKET_CATEGORY_ID", 0)) or None,
+    "vouch_channel_id": int(os.getenv("VOUCH_CHANNEL_ID", 0)) or None,
+    "staff_role_id": int(os.getenv("STAFF_ROLE_ID", 0)) or None
 }
 
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
         save_config(DEFAULT_CONFIG.copy())
+        return DEFAULT_CONFIG.copy()
 
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as file:
-            return json.load(file)
+            data = json.load(file)
+            # Ensure missing keys fall back to defaults
+            for key, val in DEFAULT_CONFIG.items():
+                if not data.get(key) and val:
+                    data[key] = val
+            return data
 
     except (json.JSONDecodeError, OSError):
         save_config(DEFAULT_CONFIG.copy())
@@ -370,7 +377,6 @@ async def on_ready():
     # INSTANT SLASH COMMAND SYNC FOR YOUR SERVER
     try:
         for guild in bot.guilds:
-            # Sync commands to the specific guild tree instantly
             bot.tree.copy_global_to(guild=guild)
             synced = await bot.tree.sync(guild=guild)
             print(f"Synced {len(synced)} command(s) to guild: {guild.name} ({guild.id})")
