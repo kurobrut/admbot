@@ -671,12 +671,30 @@ async def status(
         ephemeral=True
     )
 
-    # Attempts to rename the channel safely in background without freezing command execution
+    # Rename the configured status channel AFTER the status message is sent.
+    # Discord requires Manage Channels permission for this to work.
     if status_channel.name != channel_name:
         try:
-            await asyncio.wait_for(status_channel.edit(name=channel_name), timeout=2.0)
-        except (asyncio.TimeoutError, Exception):
-            print("Channel rename deferred/skipped due to Discord rate limits.")
+            me = interaction.guild.me
+            if me is None:
+                me = interaction.guild.get_member(bot.user.id)
+
+            if me is None or not me.guild_permissions.manage_channels:
+                print("❌ Cannot rename status channel: bot is missing Manage Channels permission.")
+            else:
+                await status_channel.edit(
+                    name=channel_name,
+                    reason=f"Shop status changed to {state.name} by {interaction.user}"
+                )
+                print(f"✅ Status channel renamed to #{channel_name}")
+
+        except discord.Forbidden:
+            print("❌ Cannot rename status channel: Discord denied permission. "
+                  "Make sure the bot has Manage Channels and its role is above the channel's permissions.")
+        except discord.HTTPException as error:
+            print(f"❌ Discord error while renaming status channel: {error}")
+        except Exception as error:
+            print(f"❌ Unexpected error while renaming status channel: {error}")
 
 
 @bot.tree.command(
