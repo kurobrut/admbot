@@ -59,6 +59,7 @@ DEFAULT_CONFIG = {
     "ticket_category_id": int(os.getenv("TICKET_CATEGORY_ID", 0)) or None,
     "vouch_channel_id": int(os.getenv("VOUCH_CHANNEL_ID", 0)) or None,
     "status_channel_id": int(os.getenv("STATUS_CHANNEL_ID", 0)) or None,
+    "welcome_goodbye_channel_id": int(os.getenv("WELCOME_GOODBYE_CHANNEL_ID", 0)) or None,
     "staff_role_id": int(os.getenv("STAFF_ROLE_ID", 0)) or None
 }
 
@@ -152,6 +153,95 @@ def is_staff(interaction: discord.Interaction):
         role.id == staff_role_id
         for role in getattr(interaction.user, "roles", [])
     )
+
+
+# =========================================================
+# BACKGROUND CHANNEL RENAME QUEUE
+# =========================================================
+
+pending_renames = {}
+
+async def process_channel_renames():
+    """Background loop that updates channel names as fast as Discord allows."""
+    while True:
+        if pending_renames:
+            channel_id, new_name = list(pending_renames.items())[0]
+            del pending_renames[channel_id]
+
+            channel = bot.get_channel(channel_id)
+            if channel and channel.name != new_name:
+                try:
+                    await channel.edit(name=new_name)
+                    print(f"Successfully renamed channel {channel.id} to {new_name}")
+                except discord.HTTPException as e:
+                    if e.status == 429: # Rate limited by Discord
+                        retry_after = getattr(e, 'retry_after', 300)
+                        print(f"Rate limited on channel rename. Retrying in {retry_after}s...")
+                        pending_renames[channel_id] = new_name
+                        await asyncio.sleep(retry_after)
+                except Exception as e:
+                    print(f"Error renaming channel: {e}")
+
+        await asyncio.sleep(5)
+
+
+# =========================================================
+# WELCOME & GOODBYE EVENTS
+# =========================================================
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    channel_id = config.get("welcome_goodbye_channel_id")
+    if not channel_id:
+        return
+
+    channel = member.guild.get_channel(channel_id)
+    if not channel:
+        return
+
+    embed = discord.Embed(
+        title="୨୧・𝘸𝘦𝘭𝘤𝘰𝘮𝘦 𝘵𝘰 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦! ♡",
+        description=(
+            f"Welcome {member.mention}! 🌸\n\n"
+            "We are super happy to have you here! ♡\n"
+            "Feel free to check out our shop, open a ticket for custom orders, or chat with the community!\n\n"
+            f"୨୧ **Member Count:** `#{member.guild.member_count}`"
+        ),
+        color=PINK
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.set_footer(text="ali's adm house • Welcome ♡")
+
+    await channel.send(
+        content=f"Welcome {member.mention}! ♡",
+        embed=embed,
+        allowed_mentions=discord.AllowedMentions(users=[member])
+    )
+
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    channel_id = config.get("welcome_goodbye_channel_id")
+    if not channel_id:
+        return
+
+    channel = member.guild.get_channel(channel_id)
+    if not channel:
+        return
+
+    embed = discord.Embed(
+        title="୨୧・𝘨𝘰𝘰𝘥𝘣𝘺𝘦 ♡",
+        description=(
+            f"**{member.name}** has left the server... 💔\n\n"
+            "We hope to see you again soon at **ali's adm house**! ♡\n\n"
+            f"୨୧ **Member Count:** `{member.guild.member_count}`"
+        ),
+        color=GRAY
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.set_footer(text="ali's adm house • Goodbye ♡")
+
+    await channel.send(embed=embed)
 
 
 # =========================================================
@@ -366,6 +456,10 @@ async def on_ready():
         bot.add_view(CloseTicketView())
         bot._persistent_views_loaded = True
 
+    # Start background loop for renaming channels to avoid rate limits
+    if not hasattr(bot, "_rename_task"):
+        bot._rename_task = bot.loop.create_task(process_channel_renames())
+
     try:
         # 1. Clear guild-level overrides to remove duplicate commands
         for guild in bot.guilds:
@@ -386,7 +480,7 @@ async def on_ready():
 
 @bot.tree.command(
     name="setup",
-    description="Configure the ticket, vouch, and status system."
+    description="Configure the ticket, vouch, status, and welcome system."
 )
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(
@@ -394,6 +488,7 @@ async def on_ready():
     ticket_category="Category where new tickets will be created",
     vouch_channel="Channel where /vouch messages will be posted",
     status_channel="Channel where order status updates will be posted",
+    welcome_goodbye_channel="Channel where welcome and goodbye messages are sent",
     staff_role="Staff role allowed to manage tickets and /say"
 )
 async def setup(
@@ -402,6 +497,7 @@ async def setup(
     ticket_category: discord.CategoryChannel,
     vouch_channel: discord.TextChannel,
     status_channel: discord.TextChannel | None = None,
+    welcome_goodbye_channel: discord.TextChannel | None = None,
     staff_role: discord.Role | None = None
 ):
 
@@ -415,6 +511,7 @@ async def setup(
     config["ticket_category_id"] = ticket_category.id
     config["vouch_channel_id"] = vouch_channel.id
     config["status_channel_id"] = status_channel.id if status_channel else None
+    config["welcome_goodbye_channel_id"] = welcome_goodbye_channel.id if welcome_goodbye_channel else None
     config["staff_role_id"] = staff_role.id if staff_role else None
 
     save_config(config)
@@ -445,6 +542,7 @@ async def setup(
         f"📁 Ticket Category: **{ticket_category.name}**\n"
         f"⭐ Vouches: {vouch_channel.mention}\n"
         f"📊 Status: {status_channel.mention if status_channel else 'Not Configured'}\n"
+        f"👋 Welcome/Goodbye: {welcome_goodbye_channel.mention if welcome_goodbye_channel else 'Not Configured'}\n"
         f"👥 Staff: {staff_role.mention if staff_role else 'Manage Channels'}",
         ephemeral=True
     )
@@ -671,30 +769,8 @@ async def status(
         ephemeral=True
     )
 
-    # Rename the configured status channel AFTER the status message is sent.
-    # Discord requires Manage Channels permission for this to work.
-    if status_channel.name != channel_name:
-        try:
-            me = interaction.guild.me
-            if me is None:
-                me = interaction.guild.get_member(bot.user.id)
-
-            if me is None or not me.guild_permissions.manage_channels:
-                print("❌ Cannot rename status channel: bot is missing Manage Channels permission.")
-            else:
-                await status_channel.edit(
-                    name=channel_name,
-                    reason=f"Shop status changed to {state.name} by {interaction.user}"
-                )
-                print(f"✅ Status channel renamed to #{channel_name}")
-
-        except discord.Forbidden:
-            print("❌ Cannot rename status channel: Discord denied permission. "
-                  "Make sure the bot has Manage Channels and its role is above the channel's permissions.")
-        except discord.HTTPException as error:
-            print(f"❌ Discord error while renaming status channel: {error}")
-        except Exception as error:
-            print(f"❌ Unexpected error while renaming status channel: {error}")
+    # Queue the channel rename through the background processor
+    pending_renames[status_channel.id] = channel_name
 
 
 @bot.tree.command(
