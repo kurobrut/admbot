@@ -381,10 +381,7 @@ class TicketView(discord.ui.View):
 class CloseTicketView(discord.ui.View):
 
     def __init__(self):
-
-        super().__init__(
-            timeout=None
-        )
+        super().__init__(timeout=None)
 
     @discord.ui.button(
         label="Close Ticket",
@@ -397,27 +394,56 @@ class CloseTicketView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button
     ):
+        # 1. Staff members bypass the vouch check
+        if is_staff(interaction):
+            await interaction.response.send_message(
+                "🔒 Closing ticket in **3 seconds**..."
+            )
+            await asyncio.sleep(3)
+            if interaction.channel:
+                await interaction.channel.delete(
+                    reason=f"Ticket closed by staff member {interaction.user}"
+                )
+            return
 
-        if not is_staff(interaction):
+        # 2. Check if the vouch channel is configured
+        vouch_channel_id = config.get("vouch_channel_id")
+        vouch_channel = (
+            interaction.guild.get_channel(vouch_channel_id)
+            if vouch_channel_id and interaction.guild
+            else None
+        )
 
+        if not vouch_channel:
             return await interaction.response.send_message(
-                "❌ Only staff members can close tickets.",
+                "❌ The vouch channel has not been configured yet.",
                 ephemeral=True
             )
 
-        await interaction.response.send_message(
-            "🔒 This ticket will close in **3 seconds**..."
-        )
+        # 3. Scan the vouch channel for the user's ID/ping
+        has_vouched = False
+        async for message in vouch_channel.history(limit=100):
+            if message.author == interaction.client.user:
+                if interaction.user in message.mentions or str(interaction.user.id) in message.content:
+                    has_vouched = True
+                    break
 
+        # 4. Prompt to vouch if no vouch is found
+        if not has_vouched:
+            return await interaction.response.send_message(
+                f"Did you vouch yet? ♡ If not, please use `/vouch` in {vouch_channel.mention} before closing your ticket!",
+                ephemeral=True
+            )
+
+        # 5. Process ticket closure if verified
+        await interaction.response.send_message(
+            "Thank you for your vouch! ♡ Closing this ticket in **3 seconds**..."
+        )
         await asyncio.sleep(3)
 
         if interaction.channel:
-
             await interaction.channel.delete(
-                reason=(
-                    f"Ticket closed by "
-                    f"{interaction.user}"
-                )
+                reason=f"Ticket closed by customer {interaction.user} (Vouch verified)"
             )
 
 
