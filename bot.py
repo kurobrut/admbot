@@ -169,89 +169,65 @@ def is_staff(interaction: discord.Interaction):
 # TICKET PANEL
 # =========================================================
 
-# =========================================================
-# CLOSE TICKET
-# =========================================================
-
-class CloseTicketView(discord.ui.View):
+class TicketView(discord.ui.View):
 
     def __init__(self):
-        super().__init__(timeout=None)
+        super().__init__(
+            timeout=None
+        )
 
     @discord.ui.button(
-        label="Close Ticket",
-        emoji="🔒",
-        style=discord.ButtonStyle.danger,
-        custom_id="ali_adm_close_ticket"
+        label="Open Ticket",
+        emoji="🎫",
+        style=discord.ButtonStyle.primary,
+        custom_id="ali_adm_open_ticket"
     )
-    async def close_ticket(
+    async def open_ticket(
         self,
         interaction: discord.Interaction,
         button: discord.ui.Button
     ):
-        # 1. Staff members can bypass the vouch requirement
-        if is_staff(interaction):
-            await interaction.response.send_message(
-                "🔒 Closing ticket in **3 seconds**..."
-            )
-            await asyncio.sleep(3)
-            if interaction.channel:
-                await interaction.channel.delete(
-                    reason=f"Ticket closed by staff member {interaction.user}"
-                )
+
+        guild = interaction.guild
+
+        if guild is None:
             return
 
-        # 2. Check if the vouch channel is configured
-        vouch_channel_id = config.get("vouch_channel_id")
-        vouch_channel = (
-            interaction.guild.get_channel(vouch_channel_id)
-            if vouch_channel_id and interaction.guild
+        # ---------------------------------------------
+        # GET CATEGORY
+        # ---------------------------------------------
+
+        category_id = config.get(
+            "ticket_category_id"
+        )
+
+        category = (
+            guild.get_channel(category_id)
+            if category_id
             else None
         )
 
-        if not vouch_channel:
+        if category is None:
+
             return await interaction.response.send_message(
-                "❌ The vouch channel has not been configured yet.",
+                "❌ The ticket category hasn't been configured yet.",
                 ephemeral=True
             )
 
-        # 3. Check for the user's vouch in the vouch channel
-        has_vouched = False
-        async for message in vouch_channel.history(limit=100):
-            if message.author == interaction.client.user:
-                if interaction.user in message.mentions or str(interaction.user.id) in message.content:
-                    has_vouched = True
-                    break
+        # ---------------------------------------------
+        # CHECK EXISTING TICKET
+        # ---------------------------------------------
 
-        # 4. Find the #₊˚⊹♡-𝓫𝓸𝓽-𝓬𝓸𝓶𝓶𝓪𝓷𝓭𝓼 channel dynamically to ping it
-        bot_commands_channel = discord.utils.get(
-            interaction.guild.text_channels, 
-            name="₊˚⊹♡-𝓫𝓸𝓽-𝓬𝓸𝓶𝓶𝓪𝓷𝓭𝓼"
-        )
-        
-        bot_commands_mention = (
-            bot_commands_channel.mention 
-            if bot_commands_channel 
-            else "`#₊˚⊹♡-𝓫𝓸𝓽-𝓬𝓸𝓶𝓶𝓪𝓷𝓭𝓼`"
-        )
+        for channel in guild.text_channels:
 
-        # 5. Prompt to vouch in the bot commands channel if not verified
-        if not has_vouched:
-            return await interaction.response.send_message(
-                f"Did you vouch yet? ♡ If not, please use `/vouch` in {bot_commands_mention} before closing your ticket!",
-                ephemeral=True
-            )
+            if channel.topic == (
+                f"ali_adm_ticket:{interaction.user.id}"
+            ):
 
-        # 6. Close ticket if verified
-        await interaction.response.send_message(
-            "Thank you for your vouch! ♡ Closing this ticket in **3 seconds**..."
-        )
-        await asyncio.sleep(3)
-
-        if interaction.channel:
-            await interaction.channel.delete(
-                reason=f"Ticket closed by customer {interaction.user} (Vouch verified)"
-            )
+                return await interaction.response.send_message(
+                    f"❌ You already have an open ticket: {channel.mention}",
+                    ephemeral=True
+                )
 
         # ---------------------------------------------
         # STAFF ROLE
@@ -418,7 +394,7 @@ class CloseTicketView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button
     ):
-        # 1. Staff members bypass the vouch check
+        # 1. Staff members can bypass the vouch check
         if is_staff(interaction):
             await interaction.response.send_message(
                 "🔒 Closing ticket in **3 seconds**..."
@@ -430,7 +406,7 @@ class CloseTicketView(discord.ui.View):
                 )
             return
 
-        # 2. Check if the vouch channel is configured
+        # 2. Get vouch channel configuration
         vouch_channel_id = config.get("vouch_channel_id")
         vouch_channel = (
             interaction.guild.get_channel(vouch_channel_id)
@@ -444,30 +420,49 @@ class CloseTicketView(discord.ui.View):
                 ephemeral=True
             )
 
-        # 3. Scan the vouch channel for the user's ID/ping
+        # 3. Check for a NEW vouch created AFTER this ticket was opened
+        ticket_created_at = interaction.channel.created_at
         has_vouched = False
+
         async for message in vouch_channel.history(limit=100):
+            # Check if message was posted by the bot for this user
             if message.author == interaction.client.user:
                 if interaction.user in message.mentions or str(interaction.user.id) in message.content:
-                    has_vouched = True
-                    break
+                    # Verify the vouch was made AFTER the ticket was opened
+                    if message.created_at >= ticket_created_at:
+                        has_vouched = True
+                        break
 
-        # 4. Prompt to vouch if no vouch is found
+        # 4. Find the bot commands channel link
+        bot_commands_channel = discord.utils.get(
+            interaction.guild.text_channels, 
+            name="₊˚⊹♡-𝓫𝓸𝓽-𝓬𝓸𝓶𝓶𝓪𝓷𝓭𝓼"
+        )
+        
+        bot_commands_mention = (
+            bot_commands_channel.mention 
+            if bot_commands_channel 
+            else "`#₊˚⊹♡-𝓫𝓸𝓽-𝓬𝓸𝓶𝓶𝓪𝓷𝓭𝓼`"
+        )
+
+        # 5. Prompt user if no valid recent vouch is found
         if not has_vouched:
             return await interaction.response.send_message(
-                f"Did you vouch yet? ♡ If not, please use `/vouch` in {vouch_channel.mention} before closing your ticket!",
+                f"Did you vouch yet? ♡ If not, please use `/vouch` in {bot_commands_mention} before closing your ticket!",
                 ephemeral=True
             )
 
-        # 5. Process ticket closure if verified
+        # 6. Success message with Thank You before deleting
         await interaction.response.send_message(
-            "Thank you for your vouch! ♡ Closing this ticket in **3 seconds**..."
+            "Thank you so much for your order and for leaving a vouch! ♡\n"
+            "We hope to see you again at **ali's adm house**! 🌸\n\n"
+            "🔒 *Closing this ticket in 3 seconds...*"
         )
         await asyncio.sleep(3)
 
         if interaction.channel:
             await interaction.channel.delete(
-                reason=f"Ticket closed by customer {interaction.user} (Vouch verified)"
+                reason=f"Ticket closed by customer {interaction.user} (Verified fresh vouch)"
             )
 
 
