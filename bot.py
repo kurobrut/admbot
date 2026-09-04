@@ -54,11 +54,11 @@ def keep_alive():
 
 CONFIG_FILE = "config.json"
 
-# Replace these numbers with your actual Discord IDs so they survive bot restarts!
 DEFAULT_CONFIG = {
     "panel_channel_id": int(os.getenv("PANEL_CHANNEL_ID", 0)) or None,
     "ticket_category_id": int(os.getenv("TICKET_CATEGORY_ID", 0)) or None,
     "vouch_channel_id": int(os.getenv("VOUCH_CHANNEL_ID", 0)) or None,
+    "status_channel_id": int(os.getenv("STATUS_CHANNEL_ID", 0)) or None,
     "staff_role_id": int(os.getenv("STAFF_ROLE_ID", 0)) or None
 }
 
@@ -71,7 +71,6 @@ def load_config():
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as file:
             data = json.load(file)
-            # Ensure missing keys fall back to defaults
             for key, val in DEFAULT_CONFIG.items():
                 if not data.get(key) and val:
                     data[key] = val
@@ -111,11 +110,10 @@ bot = commands.Bot(
 # COLORS
 # =========================================================
 
-PINK = discord.Color.from_rgb(
-    255,
-    143,
-    194
-)
+PINK = discord.Color.from_rgb(255, 143, 194)
+GREEN = discord.Color.from_rgb(87, 242, 135)
+RED = discord.Color.from_rgb(237, 66, 69)
+GRAY = discord.Color.from_rgb(149, 165, 166)
 
 
 # =========================================================
@@ -123,17 +121,14 @@ PINK = discord.Color.from_rgb(
 # =========================================================
 
 def styled_embed(title, description):
-
     embed = discord.Embed(
         title=title,
         description=description,
         color=PINK
     )
-
     embed.set_footer(
         text="୨୧ ali's adm house • Customer Shop ♡"
     )
-
     return embed
 
 
@@ -142,7 +137,6 @@ def styled_embed(title, description):
 # =========================================================
 
 def is_staff(interaction: discord.Interaction):
-
     if interaction.guild is None:
         return False
 
@@ -180,7 +174,6 @@ class TicketView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button
     ):
-
         guild = interaction.guild
 
         if guild is None:
@@ -391,13 +384,14 @@ async def on_ready():
 
 @bot.tree.command(
     name="setup",
-    description="Configure the ticket and vouch system."
+    description="Configure the ticket, vouch, and status system."
 )
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(
     panel_channel="Channel where the ticket panel will be sent",
     ticket_category="Category where new tickets will be created",
     vouch_channel="Channel where /vouch messages will be posted",
+    status_channel="Channel where order status updates will be posted",
     staff_role="Staff role allowed to manage tickets and /say"
 )
 async def setup(
@@ -405,6 +399,7 @@ async def setup(
     panel_channel: discord.TextChannel,
     ticket_category: discord.CategoryChannel,
     vouch_channel: discord.TextChannel,
+    status_channel: discord.TextChannel | None = None,
     staff_role: discord.Role | None = None
 ):
 
@@ -417,6 +412,7 @@ async def setup(
     config["panel_channel_id"] = panel_channel.id
     config["ticket_category_id"] = ticket_category.id
     config["vouch_channel_id"] = vouch_channel.id
+    config["status_channel_id"] = status_channel.id if status_channel else None
     config["staff_role_id"] = staff_role.id if staff_role else None
 
     save_config(config)
@@ -446,6 +442,7 @@ async def setup(
         f"🎫 Panel: {panel_channel.mention}\n"
         f"📁 Ticket Category: **{ticket_category.name}**\n"
         f"⭐ Vouches: {vouch_channel.mention}\n"
+        f"📊 Status: {status_channel.mention if status_channel else 'Not Configured'}\n"
         f"👥 Staff: {staff_role.mention if staff_role else 'Manage Channels'}",
         ephemeral=True
     )
@@ -589,6 +586,151 @@ async def vouch_prefix(ctx, *, message: str = None):
         pass
 
     await ctx.send(f"♡ Thank you {ctx.author.mention}, your vouch has been posted! ⭐", delete_after=5)
+
+
+# =========================================================
+# /VOUCHCOUNT
+# =========================================================
+
+@bot.tree.command(
+    name="vouchcount",
+    description="Check how many vouches a user has submitted."
+)
+@app_commands.describe(
+    user="The user to check vouches for (defaults to you)"
+)
+async def vouchcount(
+    interaction: discord.Interaction,
+    user: discord.Member | None = None
+):
+
+    target_user = user or interaction.user
+    vouch_channel_id = config.get("vouch_channel_id")
+    vouch_channel = (
+        interaction.guild.get_channel(vouch_channel_id)
+        if vouch_channel_id and interaction.guild
+        else None
+    )
+
+    if not vouch_channel:
+        return await interaction.response.send_message(
+            "❌ The vouch channel hasn't been configured yet.",
+            ephemeral=True
+        )
+
+    await interaction.response.defer(ephemeral=True)
+
+    count = 0
+    async for message in vouch_channel.history(limit=500):
+        if message.author == bot.user:
+            if target_user in message.mentions or str(target_user.id) in message.content:
+                count += 1
+
+    embed = discord.Embed(
+        title="୨୧・𝘷𝘰𝘶𝘤𝘩 𝘤𝘰𝘶𝘯𝘵 ♡",
+        description=(
+            f"**{target_user.mention}** currently has **{count}** total vouch(es)! ⭐\n\n"
+            "Thank you for supporting **ali's adm house**! ♡"
+        ),
+        color=PINK
+    )
+    embed.set_footer(text="ali's adm house • Customer Statistics ♡")
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# =========================================================
+# /PING
+# =========================================================
+
+@bot.tree.command(
+    name="ping",
+    description="Check the bot's latency and connection status."
+)
+async def ping(interaction: discord.Interaction):
+    latency = round(bot.latency * 1000)
+
+    embed = discord.Embed(
+        title="୨୧・𝘱𝘰𝘯𝘨! ♡",
+        description=f"🌸 Bot Latency: **{latency}ms**\n✨ Status: **Online & Operational**",
+        color=PINK
+    )
+    embed.set_footer(text="ali's adm house • Bot Status ♡")
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# =========================================================
+# /STATUS
+# =========================================================
+
+@bot.tree.command(
+    name="status",
+    description="Update shop order status (Available, Busy, or Closed)."
+)
+@app_commands.choices(state=[
+    app_commands.Choice(name="Available (Green)", value="available"),
+    app_commands.Choice(name="Busy (Red)", value="busy"),
+    app_commands.Choice(name="Closed (Gray)", value="closed")
+])
+async def status(
+    interaction: discord.Interaction,
+    state: app_commands.Choice[str]
+):
+
+    if not is_staff(interaction):
+        return await interaction.response.send_message(
+            "❌ Only staff members can update the shop status.",
+            ephemeral=True
+        )
+
+    status_channel_id = config.get("status_channel_id")
+    status_channel = (
+        interaction.guild.get_channel(status_channel_id)
+        if status_channel_id and interaction.guild
+        else None
+    )
+
+    if not status_channel:
+        return await interaction.response.send_message(
+            "❌ Status channel not configured! Use `/setup` and include the status channel.",
+            ephemeral=True
+        )
+
+    if state.value == "available":
+        channel_name = "🟢-available"
+        title = "🟢・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘢𝘷𝘢𝘪𝘭𝘢𝘣𝘭𝘦"
+        desc = "Our shop is currently **OPEN** for new orders! ♡\n\nFeel free to open a ticket to place your order."
+        color = GREEN
+    elif state.value == "busy":
+        channel_name = "🔴-busy"
+        title = "🔴・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘣𝘶𝘴𝘺"
+        desc = "Our shop is currently **BUSY**! 🎀\n\nOrder fulfillment might take a little longer than usual, but tickets are open!"
+        color = RED
+    else:
+        channel_name = "⚪-closed"
+        title = "⚪・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘤𝘭𝘰𝘴𝘦𝘥"
+        desc = "Our shop is currently **CLOSED**! ♡\n\nPlease check back later when we reopen!"
+        color = GRAY
+
+    # Rename status channel
+    try:
+        await status_channel.edit(name=channel_name)
+    except discord.Forbidden:
+        pass
+
+    embed = discord.Embed(
+        title=title,
+        description=desc,
+        color=color
+    )
+    embed.set_footer(text="ali's adm house • Shop Status ♡")
+
+    await status_channel.send(embed=embed)
+    await interaction.response.send_message(
+        f"♡ Shop status updated to **{state.name}** in {status_channel.mention}!",
+        ephemeral=True
+    )
 
 
 # =========================================================
