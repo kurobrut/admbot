@@ -2,35 +2,50 @@ import os
 import json
 import asyncio
 import discord
+
 from discord import app_commands
 from discord.ext import commands
 from flask import Flask
 from threading import Thread
 
+
+# =========================================================
+# KEEP ALIVE
+# =========================================================
+
 app = Flask(__name__)
+
 
 @app.route("/")
 def home():
     return "ali's adm house bot is online! ♡"
 
+
 @app.route("/health")
 def health():
     return "OK"
 
+
 def run_web():
     port = int(os.environ.get("PORT", 8080))
+
     app.run(
         host="0.0.0.0",
-        port=port
+        port=port,
+        debug=False,
+        use_reloader=False
     )
+
 
 def keep_alive():
     server = Thread(
         target=run_web,
         daemon=True
     )
+
     server.start()
 
+    print(f"Keep-alive web server started on port {os.environ.get('PORT', '8080')}")
 
 
 # =========================================================
@@ -51,8 +66,13 @@ def load_config():
     if not os.path.exists(CONFIG_FILE):
         save_config(DEFAULT_CONFIG.copy())
 
-    with open(CONFIG_FILE, "r", encoding="utf-8") as file:
-        return json.load(file)
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
+
+    except (json.JSONDecodeError, OSError):
+        save_config(DEFAULT_CONFIG.copy())
+        return DEFAULT_CONFIG.copy()
 
 
 def save_config(data):
@@ -64,13 +84,18 @@ config = load_config()
 
 
 # =========================================================
-# BOT
+# BOT / INTENTS
 # =========================================================
 
 intents = discord.Intents.default()
+
 intents.guilds = True
 intents.members = True
+
+# FIXES:
+# Privileged Message Content Intent warning
 intents.message_content = True
+
 
 bot = commands.Bot(
     command_prefix="!",
@@ -114,6 +139,9 @@ def styled_embed(title, description):
 
 def is_staff(interaction: discord.Interaction):
 
+    if interaction.guild is None:
+        return False
+
     # Administrator
     if interaction.user.guild_permissions.administrator:
         return True
@@ -127,7 +155,6 @@ def is_staff(interaction: discord.Interaction):
     if not staff_role_id:
         return interaction.user.guild_permissions.manage_channels
 
-    # Check staff role
     return any(
         role.id == staff_role_id
         for role in getattr(
@@ -145,11 +172,9 @@ def is_staff(interaction: discord.Interaction):
 class TicketView(discord.ui.View):
 
     def __init__(self):
-
         super().__init__(
             timeout=None
         )
-
 
     @discord.ui.button(
         label="Open Ticket",
@@ -168,7 +193,6 @@ class TicketView(discord.ui.View):
         if guild is None:
             return
 
-
         # ---------------------------------------------
         # GET CATEGORY
         # ---------------------------------------------
@@ -178,13 +202,10 @@ class TicketView(discord.ui.View):
         )
 
         category = (
-            guild.get_channel(
-                category_id
-            )
+            guild.get_channel(category_id)
             if category_id
             else None
         )
-
 
         if category is None:
 
@@ -192,7 +213,6 @@ class TicketView(discord.ui.View):
                 "❌ The ticket category hasn't been configured yet.",
                 ephemeral=True
             )
-
 
         # ---------------------------------------------
         # CHECK EXISTING TICKET
@@ -209,7 +229,6 @@ class TicketView(discord.ui.View):
                     ephemeral=True
                 )
 
-
         # ---------------------------------------------
         # STAFF ROLE
         # ---------------------------------------------
@@ -225,7 +244,6 @@ class TicketView(discord.ui.View):
             staff_role = guild.get_role(
                 staff_role_id
             )
-
 
         # ---------------------------------------------
         # PERMISSIONS
@@ -248,7 +266,6 @@ class TicketView(discord.ui.View):
                 )
         }
 
-
         # Staff permissions
         if staff_role:
 
@@ -262,7 +279,6 @@ class TicketView(discord.ui.View):
                     embed_links=True
                 )
             )
-
 
         # ---------------------------------------------
         # CREATE TICKET
@@ -280,7 +296,6 @@ class TicketView(discord.ui.View):
             f"ticket-{username}"
         )[:90]
 
-
         ticket_channel = (
             await guild.create_text_channel(
 
@@ -296,7 +311,6 @@ class TicketView(discord.ui.View):
                 )
             )
         )
-
 
         # ---------------------------------------------
         # TICKET EMBED
@@ -325,11 +339,9 @@ class TicketView(discord.ui.View):
             color=PINK
         )
 
-
         embed.set_footer(
             text="ali's adm house • Support Tickets ♡"
         )
-
 
         # ---------------------------------------------
         # SEND TICKET MESSAGE
@@ -347,7 +359,6 @@ class TicketView(discord.ui.View):
                 users=[interaction.user]
             )
         )
-
 
         # ---------------------------------------------
         # CONFIRMATION
@@ -374,7 +385,6 @@ class CloseTicketView(discord.ui.View):
             timeout=None
         )
 
-
     @discord.ui.button(
         label="Close Ticket",
         emoji="🔒",
@@ -394,46 +404,61 @@ class CloseTicketView(discord.ui.View):
                 ephemeral=True
             )
 
-
         await interaction.response.send_message(
             "🔒 This ticket will close in **3 seconds**..."
         )
 
-
         await asyncio.sleep(3)
 
+        if interaction.channel:
 
-        await interaction.channel.delete(
-            reason=(
-                f"Ticket closed by "
-                f"{interaction.user}"
+            await interaction.channel.delete(
+                reason=(
+                    f"Ticket closed by "
+                    f"{interaction.user}"
+                )
             )
-        )
 
 
 # =========================================================
 # BOT READY
 # =========================================================
 
-async def setup_hook():
-    # Register persistent button views once when the bot starts.
-    bot.add_view(TicketView())
-    bot.add_view(CloseTicketView())
-
-    try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} slash commands")
-    except Exception as error:
-        print(f"Command sync error: {error}")
-
-
-bot.setup_hook = setup_hook
-
-
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-    print("Keep-alive web server is running on port " + os.environ.get("PORT", "8080"))
+
+    print(
+        f"Logged in as {bot.user} "
+        f"(ID: {bot.user.id})"
+    )
+
+    # Persistent buttons
+    # Only register them once per process.
+    if not getattr(bot, "_persistent_views_loaded", False):
+
+        bot.add_view(
+            TicketView()
+        )
+
+        bot.add_view(
+            CloseTicketView()
+        )
+
+        bot._persistent_views_loaded = True
+
+    try:
+
+        synced = await bot.tree.sync()
+
+        print(
+            f"Synced {len(synced)} slash commands"
+        )
+
+    except Exception as error:
+
+        print(
+            f"Command sync error: {error}"
+        )
 
 
 # =========================================================
@@ -480,7 +505,6 @@ async def setup(
 
 ):
 
-
     # ---------------------------------------------
     # ADMIN CHECK
     # ---------------------------------------------
@@ -494,7 +518,6 @@ async def setup(
 
             ephemeral=True
         )
-
 
     # ---------------------------------------------
     # SAVE CONFIG
@@ -521,11 +544,9 @@ async def setup(
         else None
     )
 
-
     save_config(
         config
     )
-
 
     # ---------------------------------------------
     # TICKET PANEL EMBED
@@ -554,11 +575,9 @@ async def setup(
         color=PINK
     )
 
-
     embed.set_footer(
         text="ali's adm house • Support ♡"
     )
-
 
     # ---------------------------------------------
     # SEND PANEL
@@ -570,7 +589,6 @@ async def setup(
 
         view=TicketView()
     )
-
 
     # ---------------------------------------------
     # CONFIRM
@@ -621,7 +639,6 @@ async def ticketpanel(
 
 ):
 
-
     if not is_staff(interaction):
 
         return await interaction.response.send_message(
@@ -631,7 +648,6 @@ async def ticketpanel(
 
             ephemeral=True
         )
-
 
     embed = discord.Embed(
 
@@ -651,11 +667,9 @@ async def ticketpanel(
         color=PINK
     )
 
-
     embed.set_footer(
         text="ali's adm house • Support ♡"
     )
-
 
     await channel.send(
 
@@ -663,7 +677,6 @@ async def ticketpanel(
 
         view=TicketView()
     )
-
 
     await interaction.response.send_message(
 
@@ -693,7 +706,6 @@ async def vouch(
 
 ):
 
-
     # ---------------------------------------------
     # GET VOUCH CHANNEL
     # ---------------------------------------------
@@ -702,18 +714,16 @@ async def vouch(
         "vouch_channel_id"
     )
 
-
     channel = (
 
         interaction.guild.get_channel(
             channel_id
         )
 
-        if channel_id
+        if channel_id and interaction.guild
 
         else None
     )
-
 
     if channel is None:
 
@@ -727,7 +737,6 @@ async def vouch(
 
             ephemeral=True
         )
-
 
     # ---------------------------------------------
     # VOUCH EMBED
@@ -753,7 +762,6 @@ async def vouch(
         color=PINK
     )
 
-
     # ---------------------------------------------
     # SHOP AUTHOR
     # ---------------------------------------------
@@ -765,7 +773,6 @@ async def vouch(
             "𝒜𝒟𝑀 𝐻𝑜𝓊𝓈𝑒 ♡"
         )
     )
-
 
     # ---------------------------------------------
     # FOOTER
@@ -779,7 +786,6 @@ async def vouch(
         )
     )
 
-
     # ---------------------------------------------
     # SEND VOUCH
     # ---------------------------------------------
@@ -788,13 +794,10 @@ async def vouch(
 
         embed=embed,
 
-        # This allows the actual user mention
-        # inside the embed to ping them.
         allowed_mentions=discord.AllowedMentions(
             users=[interaction.user]
         )
     )
-
 
     # ---------------------------------------------
     # CONFIRMATION
@@ -838,7 +841,6 @@ async def say(
 
 ):
 
-
     if not is_staff(interaction):
 
         return await interaction.response.send_message(
@@ -848,22 +850,18 @@ async def say(
             ephemeral=True
         )
 
-
     # ---------------------------------------------
     # ANNOUNCEMENT EMBED
     # ---------------------------------------------
 
     embed = discord.Embed(
 
-        title=(
-            "୨୧・𝒜𝓃𝓃𝑜𝓊𝓃𝒸𝑒𝓂𝑒𝓃𝓉 ♡"
-        ),
+        title="𝘢𝘯𝘯𝘰𝘶𝘯𝘤𝘦𝘮𝘦𝘯𝘵",
 
         description=message,
 
         color=PINK
     )
-
 
     embed.set_footer(
 
@@ -873,11 +871,13 @@ async def say(
         )
     )
 
+    # ---------------------------------------------
+    # SEND ANNOUNCEMENT
+    # ---------------------------------------------
 
     await channel.send(
         embed=embed
     )
-
 
     await interaction.response.send_message(
 
@@ -885,6 +885,24 @@ async def say(
         f"{channel.mention}.",
 
         ephemeral=True
+    )
+
+
+# =========================================================
+# ERROR HANDLER
+# =========================================================
+
+@bot.event
+async def on_command_error(ctx, error):
+
+    if isinstance(
+        error,
+        commands.CommandNotFound
+    ):
+        return
+
+    print(
+        f"Command error: {error}"
     )
 
 
@@ -911,7 +929,16 @@ if not TOKEN:
     )
 
 
+# =========================================================
+# START KEEP ALIVE FIRST
+# =========================================================
+
 keep_alive()
+
+
+# =========================================================
+# START DISCORD BOT
+# =========================================================
 
 bot.run(
     TOKEN
