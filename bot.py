@@ -60,7 +60,8 @@ DEFAULT_CONFIG = {
     "vouch_channel_id": int(os.getenv("VOUCH_CHANNEL_ID", 0)) or None,
     "status_channel_id": int(os.getenv("STATUS_CHANNEL_ID", 0)) or None,
     "welcome_goodbye_channel_id": int(os.getenv("WELCOME_GOODBYE_CHANNEL_ID", 0)) or None,
-    "staff_role_id": int(os.getenv("STAFF_ROLE_ID", 0)) or None
+    "staff_role_id": int(os.getenv("STAFF_ROLE_ID", 0)) or None,
+    "customer_role_id": int(os.getenv("CUSTOMER_ROLE_ID", 1545438540362555463)) or 1545438540362555463
 }
 
 
@@ -186,11 +187,24 @@ async def process_channel_renames():
 
 
 # =========================================================
-# WELCOME & GOODBYE EVENTS
+# WELCOME & GOODBYE EVENTS (AUTO ROLE INCLUDED)
 # =========================================================
 
 @bot.event
 async def on_member_join(member: discord.Member):
+    # Auto-assign customer role
+    customer_role_id = config.get("customer_role_id")
+    if customer_role_id:
+        role = member.guild.get_role(customer_role_id)
+        if role:
+            try:
+                await member.add_roles(role, reason="Automatic customer role on join")
+            except discord.Forbidden:
+                print(f"Failed to add role {role.name} to {member.name}: Bot lacks permissions or role is above bot's highest role.")
+            except Exception as e:
+                print(f"Error assigning customer role: {e}")
+
+    # Send Welcome Message
     channel_id = config.get("welcome_goodbye_channel_id")
     if not channel_id:
         return
@@ -480,7 +494,7 @@ async def on_ready():
 
 @bot.tree.command(
     name="setup",
-    description="Configure the ticket, vouch, status, and welcome system."
+    description="Configure the ticket, vouch, status, customer role, and welcome system."
 )
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(
@@ -489,7 +503,8 @@ async def on_ready():
     vouch_channel="Channel where /vouch messages will be posted",
     status_channel="Channel where order status updates will be posted",
     welcome_goodbye_channel="Channel where welcome and goodbye messages are sent",
-    staff_role="Staff role allowed to manage tickets and /say"
+    staff_role="Staff role allowed to manage tickets and /say",
+    customer_role="Role automatically given to members upon joining"
 )
 async def setup(
     interaction: discord.Interaction,
@@ -498,7 +513,8 @@ async def setup(
     vouch_channel: discord.TextChannel,
     status_channel: discord.TextChannel | None = None,
     welcome_goodbye_channel: discord.TextChannel | None = None,
-    staff_role: discord.Role | None = None
+    staff_role: discord.Role | None = None,
+    customer_role: discord.Role | None = None
 ):
 
     if not interaction.user.guild_permissions.administrator:
@@ -513,11 +529,13 @@ async def setup(
     config["status_channel_id"] = status_channel.id if status_channel else None
     config["welcome_goodbye_channel_id"] = welcome_goodbye_channel.id if welcome_goodbye_channel else None
     config["staff_role_id"] = staff_role.id if staff_role else None
+    if customer_role:
+        config["customer_role_id"] = customer_role.id
 
     save_config(config)
 
     embed = discord.Embed(
-        title="୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
+        title="抓・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
         description=(
             "Need help with an order?\n"
             "Want to ask about one of our houses?\n\n"
@@ -534,6 +552,8 @@ async def setup(
         view=TicketView()
     )
 
+    cust_role = interaction.guild.get_role(config.get("customer_role_id"))
+
     await interaction.response.send_message(
         "╭───────────────୨୧\n"
         "│ **Setup Complete! ♡**\n"
@@ -543,7 +563,8 @@ async def setup(
         f"⭐ Vouches: {vouch_channel.mention}\n"
         f"📊 Status: {status_channel.mention if status_channel else 'Not Configured'}\n"
         f"👋 Welcome/Goodbye: {welcome_goodbye_channel.mention if welcome_goodbye_channel else 'Not Configured'}\n"
-        f"👥 Staff: {staff_role.mention if staff_role else 'Manage Channels'}",
+        f"👥 Staff Role: {staff_role.mention if staff_role else 'Manage Channels'}\n"
+        f"🌸 Auto Customer Role: {cust_role.mention if cust_role else 'Not Configured'}",
         ephemeral=True
     )
 
