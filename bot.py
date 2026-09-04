@@ -70,6 +70,7 @@ config = load_config()
 intents = discord.Intents.default()
 intents.guilds = True
 intents.members = True
+intents.message_content = True
 
 bot = commands.Bot(
     command_prefix="!",
@@ -414,36 +415,25 @@ class CloseTicketView(discord.ui.View):
 # BOT READY
 # =========================================================
 
-@bot.event
-async def on_ready():
-
-    # Persistent buttons
-    bot.add_view(
-        TicketView()
-    )
-
-    bot.add_view(
-        CloseTicketView()
-    )
-
+async def setup_hook():
+    # Register persistent button views once when the bot starts.
+    bot.add_view(TicketView())
+    bot.add_view(CloseTicketView())
 
     try:
-
         synced = await bot.tree.sync()
-
-        print(
-            f"Logged in as {bot.user}"
-        )
-
-        print(
-            f"Synced {len(synced)} slash commands"
-        )
-
+        print(f"Synced {len(synced)} slash commands")
     except Exception as error:
+        print(f"Command sync error: {error}")
 
-        print(
-            f"Command sync error: {error}"
-        )
+
+bot.setup_hook = setup_hook
+
+
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    print("Keep-alive web server is running on port " + os.environ.get("PORT", "8080"))
 
 
 # =========================================================
@@ -920,6 +910,8 @@ if not TOKEN:
         "python bot.py"
     )
 
+
+keep_alive()
 
 bot.run(
     TOKEN
