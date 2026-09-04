@@ -4,6 +4,33 @@ import asyncio
 import discord
 from discord import app_commands
 from discord.ext import commands
+from flask import Flask
+from threading import Thread
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "ali's adm house bot is online! ♡"
+
+@app.route("/health")
+def health():
+    return "OK"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
+
+def keep_alive():
+    server = Thread(
+        target=run_web,
+        daemon=True
+    )
+    server.start()
+
 
 
 # =========================================================
