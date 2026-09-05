@@ -98,7 +98,11 @@ DEFAULT_CONFIG = {
             "CUSTOMER_ROLE_ID",
             1545438540362555463
         )
-    ) or 1545438540362555463
+    ) or 1545438540362555463,
+    
+    "blur_everything": bool(
+        os.getenv("BLUR_EVERYTHING", "true").lower() == "true"
+    )
 }
 
 
@@ -242,7 +246,7 @@ def styled_embed(
 
 
 # =========================================================
-# ADVANCED PROOF TEXT BLUR
+# ADVANCED PROOF TEXT BLUR - BLUR EVERYTHING
 # =========================================================
 
 def blur_region(
@@ -251,7 +255,7 @@ def blur_region(
     y1,
     x2,
     y2,
-    radius=7
+    radius=20
 ):
     """
     Blur one individual region without creating
@@ -260,208 +264,41 @@ def blur_region(
 
     width, height = image.size
 
-    x1 = max(
-        0,
-        min(width, int(x1))
-    )
-
-    y1 = max(
-        0,
-        min(height, int(y1))
-    )
-
-    x2 = max(
-        0,
-        min(width, int(x2))
-    )
-
-    y2 = max(
-        0,
-        min(height, int(y2))
-    )
+    x1 = max(0, min(width, int(x1)))
+    y1 = max(0, min(height, int(y1)))
+    x2 = max(0, min(width, int(x2)))
+    y2 = max(0, min(height, int(y2)))
 
     if x2 <= x1 or y2 <= y1:
         return
 
-    crop = image.crop(
-        (
-            x1,
-            y1,
-            x2,
-            y2
-        )
-    )
+    crop = image.crop((x1, y1, x2, y2))
+    crop = crop.filter(ImageFilter.GaussianBlur(radius=radius))
 
-    crop = crop.filter(
-        ImageFilter.GaussianBlur(
-            radius=radius
-        )
-    )
-
-    image.paste(
-        crop,
-        (
-            x1,
-            y1
-        )
-    )
+    image.paste(crop, (x1, y1))
 
 
-def is_date_or_time(text):
-    """
-    Prevent dates/times from being blurred.
-    """
-
-    text_lower = text.lower().strip()
-
-    if not text_lower:
-        return True
-
-    # Common date/time characters
-    if ":" in text_lower:
-        return True
-
-    if "/" in text_lower:
-        return True
-
-    # Month names
-    months = [
-        "jan",
-        "january",
-        "feb",
-        "february",
-        "mar",
-        "march",
-        "apr",
-        "april",
-        "may",
-        "jun",
-        "june",
-        "jul",
-        "july",
-        "aug",
-        "august",
-        "sep",
-        "sept",
-        "september",
-        "oct",
-        "october",
-        "nov",
-        "november",
-        "dec",
-        "december"
-    ]
-
-    for month in months:
-
-        if month in text_lower:
-            return True
-
-    # Pure numbers are usually dates
-    if text_lower.replace(
-        ",",
-        ""
-    ).replace(
-        ".",
-        ""
-    ).isdigit():
-
-        return True
-
-    return False
-
-
-def is_button_text(text):
-    """
-    Don't blur the large View / Report buttons.
-    """
-
-    text_lower = text.lower().strip()
-
-    ignored = {
-        "view",
-        "report",
-        "refresh",
-        "buy",
-        "cancel",
-        "confirm",
-        "close"
-    }
-
-    return text_lower in ignored
-
-
-def calculate_dark_ratio(
-    gray,
-    x1,
-    y1,
-    x2,
-    y2
-):
-    """
-    Calculates how much dark text exists inside
-    an OCR region.
-    """
-
-    h, w = gray.shape
-
-    x1 = max(
-        0,
-        min(w, int(x1))
-    )
-
-    y1 = max(
-        0,
-        min(h, int(y1))
-    )
-
-    x2 = max(
-        0,
-        min(w, int(x2))
-    )
-
-    y2 = max(
-        0,
-        min(h, int(y2))
-    )
-
-    if x2 <= x1 or y2 <= y1:
-        return 0
-
-    roi = gray[
-        y1:y2,
-        x1:x2
-    ]
-
-    if roi.size == 0:
-        return 0
-
-    dark_pixels = np.sum(
-        roi < 145
-    )
-
-    return dark_pixels / roi.size
+def is_very_short_text(text):
+    """Skip single characters or very short fragments"""
+    return len(text.strip()) < 2
 
 
 def blur_proof_text(
-    image_data: bytes
+    image_data: bytes,
+    blur_everything: bool = True
 ) -> bytes:
-
     """
-    Scans the ENTIRE screenshot using OCR.
-
-    The system:
-      1. Finds all text.
-      2. Measures each text region.
-      3. Detects dark/thick text.
-      4. Ignores dates/times.
-      5. Ignores View/Report buttons.
-      6. Blurs the detected name/text regions individually.
-
-    There is no large solid blur rectangle.
+    Scans the screenshot using OCR and blurs ALL text regions.
+    
+    FEATURES:
+    - Blurs EVERYTHING by default (usernames, dates, times, all text)
+    - OR use smart filters to skip certain patterns
+    - Configurable behavior
     """
 
     try:
+        print("[PROOF] Starting blur processing...")
+        print(f"[PROOF] Blur mode: {'EVERYTHING' if blur_everything else 'SMART FILTERS'}")
 
         # =================================================
         # LOAD IMAGE
@@ -472,8 +309,9 @@ def blur_proof_text(
         ).convert("RGB")
 
         width, height = original.size
+        print(f"[PROOF] Image size: {width}x{height}")
 
-        # OpenCV image
+        # OpenCV image for processing
         cv_image = cv2.cvtColor(
             np.array(original),
             cv2.COLOR_RGB2BGR
@@ -485,7 +323,7 @@ def blur_proof_text(
         )
 
         # =================================================
-        # UPSCALE FOR OCR
+        # UPSCALE FOR BETTER OCR
         # =================================================
 
         scale = 2
@@ -498,26 +336,44 @@ def blur_proof_text(
             interpolation=cv2.INTER_CUBIC
         )
 
+        # Apply preprocessing
+        enlarged = cv2.GaussianBlur(enlarged, (3, 3), 0)
+        _, enlarged = cv2.threshold(
+            enlarged,
+            0,
+            255,
+            cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )
+
         # =================================================
-        # OCR
+        # OCR - WITH ERROR HANDLING
         # =================================================
 
         try:
+            print("[PROOF] Running Tesseract OCR...")
 
             ocr_data = pytesseract.image_to_data(
                 enlarged,
-                config="--oem 3 --psm 11",
+                config="--oem 3 --psm 6",
                 output_type=pytesseract.Output.DICT
             )
 
-        except Exception as error:
+            print(f"[PROOF] OCR detected {len(ocr_data['text'])} text regions")
 
-            print(
-                "Tesseract error:",
-                error
-            )
+        except Exception as e:
+            print(f"[PROOF] ⚠️ Tesseract error: {e}")
+            print("[PROOF] Attempting fallback OCR...")
 
-            return image_data
+            try:
+                ocr_data = pytesseract.image_to_data(
+                    enlarged,
+                    config="--oem 1 --psm 11",
+                    output_type=pytesseract.Output.DICT
+                )
+                print(f"[PROOF] Fallback OCR detected {len(ocr_data['text'])} regions")
+            except Exception as e2:
+                print(f"[PROOF] ❌ Fallback also failed: {e2}")
+                return image_data
 
         # =================================================
         # OUTPUT IMAGE
@@ -526,107 +382,60 @@ def blur_proof_text(
         result = original.copy()
 
         # =================================================
-        # COLLECT OCR REGIONS
+        # COLLECT AND BLUR REGIONS
         # =================================================
 
         regions = []
+        total_words = len(ocr_data["text"])
 
-        total_words = len(
-            ocr_data["text"]
-        )
+        for i in range(total_words):
 
-        for i in range(
-            total_words
-        ):
-
-            text = (
-                ocr_data["text"][i]
-                .strip()
-            )
+            text = ocr_data["text"][i].strip()
 
             if not text:
                 continue
 
+            if is_very_short_text(text):
+                continue
+
             try:
-
-                confidence = float(
-                    ocr_data["conf"][i]
-                )
-
-            except (
-                ValueError,
-                TypeError
-            ):
-
+                confidence = float(ocr_data["conf"][i])
+            except (ValueError, TypeError):
                 confidence = 0
 
-            if confidence < 20:
+            # Lowered threshold to catch more text
+            if confidence < 8:
                 continue
 
-            # OCR coordinates are on enlarged image
-            x = int(
-                ocr_data["left"][i]
-                / scale
-            )
+            # Scale coordinates back to original image size
+            x = int(ocr_data["left"][i] / scale)
+            y = int(ocr_data["top"][i] / scale)
+            w = int(ocr_data["width"][i] / scale)
+            h = int(ocr_data["height"][i] / scale)
 
-            y = int(
-                ocr_data["top"][i]
-                / scale
-            )
-
-            w = int(
-                ocr_data["width"][i]
-                / scale
-            )
-
-            h = int(
-                ocr_data["height"][i]
-                / scale
-            )
-
-            if w < 3 or h < 3:
+            if w < 2 or h < 2:
                 continue
 
-            x1 = max(
-                0,
-                x
-            )
-
-            y1 = max(
-                0,
-                y
-            )
-
-            x2 = min(
-                width,
-                x + w
-            )
-
-            y2 = min(
-                height,
-                y + h
-            )
+            x1 = max(0, x)
+            y1 = max(0, y)
+            x2 = min(width, x + w)
+            y2 = min(height, y + h)
 
             if x2 <= x1 or y2 <= y1:
                 continue
 
-            regions.append(
-                {
-                    "text": text,
-                    "confidence": confidence,
-                    "x1": x1,
-                    "y1": y1,
-                    "x2": x2,
-                    "y2": y2,
-                    "width": x2 - x1,
-                    "height": y2 - y1
-                }
-            )
+            regions.append({
+                "text": text,
+                "confidence": confidence,
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2,
+                "width": x2 - x1,
+                "height": y2 - y1
+            })
 
-        print(
-            f"Proof OCR detected "
-            f"{len(regions)} text regions."
-        )
+        print(f"[PROOF] Found {len(regions)} candidate regions to evaluate")
 
         # =================================================
         # PROCESS EACH REGION
@@ -637,224 +446,108 @@ def blur_proof_text(
         for region in regions:
 
             text = region["text"]
-
             x1 = region["x1"]
             y1 = region["y1"]
             x2 = region["x2"]
             y2 = region["y2"]
+            region_height = region["height"]
+            region_width = region["width"]
 
-            region_width = (
-                region["width"]
-            )
-
-            region_height = (
-                region["height"]
-            )
-
-            # ---------------------------------------------
-            # IGNORE DATE / TIME
-            # ---------------------------------------------
-
-            if is_date_or_time(text):
+            # Skip very small text (less than 5px tall)
+            if region_height < 5:
                 continue
 
-            # ---------------------------------------------
-            # IGNORE BUTTON TEXT
-            # ---------------------------------------------
+            # =============================================
+            # BLUR EVERYTHING MODE (DEFAULT)
+            # =============================================
+            if blur_everything:
+                
+                # In blur everything mode:
+                # - Blur text that is at least 5px tall with any confidence
+                
+                if region_height >= 5 and region["confidence"] >= 8:
+                    
+                    # Add padding around the text
+                    pad_x = max(2, int(region_width * 0.12))
+                    pad_y = max(2, int(region_height * 0.25))
 
-            if is_button_text(text):
-                continue
+                    bx1 = max(0, x1 - pad_x)
+                    by1 = max(0, y1 - pad_y)
+                    bx2 = min(width, x2 + pad_x)
+                    by2 = min(height, y2 + pad_y)
 
-            # ---------------------------------------------
-            # IGNORE VERY SMALL TEXT
-            # ---------------------------------------------
+                    # STRONG blur
+                    blur_region(
+                        result,
+                        bx1,
+                        by1,
+                        bx2,
+                        by2,
+                        radius=25
+                    )
 
-            if region_height < 8:
-                continue
+                    blur_count += 1
 
-            # ---------------------------------------------
-            # DARKNESS ANALYSIS
-            # ---------------------------------------------
+                    print(
+                        f"[PROOF] ✓ Blurred: {text!r} "
+                        f"(conf={region['confidence']:.1f}, h={region_height}px)"
+                    )
 
-            dark_ratio = calculate_dark_ratio(
-                gray,
-                x1,
-                y1,
-                x2,
-                y2
-            )
+            # =============================================
+            # SMART FILTER MODE
+            # =============================================
+            else:
+                
+                # Skip button text
+                if text.lower().strip() in {
+                    "view", "report", "refresh", "buy",
+                    "cancel", "confirm", "close", "ok", "yes", "no"
+                }:
+                    continue
 
-            # ---------------------------------------------
-            # MORPHOLOGICAL THICKNESS
-            # ---------------------------------------------
+                # Only blur text >= 8px with good confidence
+                if region_height >= 8 and region["confidence"] >= 15:
+                    
+                    pad_x = max(2, int(region_width * 0.1))
+                    pad_y = max(2, int(region_height * 0.2))
 
-            sx1 = max(
-                0,
-                int(x1 * scale)
-            )
+                    bx1 = max(0, x1 - pad_x)
+                    by1 = max(0, y1 - pad_y)
+                    bx2 = min(width, x2 + pad_x)
+                    by2 = min(height, y2 + pad_y)
 
-            sy1 = max(
-                0,
-                int(y1 * scale)
-            )
+                    blur_region(
+                        result,
+                        bx1,
+                        by1,
+                        bx2,
+                        by2,
+                        radius=20
+                    )
 
-            sx2 = min(
-                enlarged.shape[1],
-                int(x2 * scale)
-            )
+                    blur_count += 1
 
-            sy2 = min(
-                enlarged.shape[0],
-                int(y2 * scale)
-            )
+                    print(
+                        f"[PROOF] ✓ Blurred: {text!r} "
+                        f"(conf={region['confidence']:.1f}, h={region_height}px)"
+                    )
 
-            roi = enlarged[
-                sy1:sy2,
-                sx1:sx2
-            ]
-
-            if roi.size == 0:
-                continue
-
-            binary = cv2.threshold(
-                roi,
-                145,
-                255,
-                cv2.THRESH_BINARY_INV
-            )[1]
-
-            kernel = np.ones(
-                (3, 3),
-                np.uint8
-            )
-
-            thick = cv2.morphologyEx(
-                binary,
-                cv2.MORPH_CLOSE,
-                kernel
-            )
-
-            thick_ratio = (
-                cv2.countNonZero(thick)
-                / thick.size
-            )
-
-            # ---------------------------------------------
-            # ESTIMATE WHETHER IT IS BOLD
-            # ---------------------------------------------
-
-            likely_bold = False
-
-            # Strong dark text
-            if (
-                dark_ratio >= 0.16
-                and thick_ratio >= 0.18
-            ):
-
-                likely_bold = True
-
-            # Smaller but very dark text
-            elif (
-                dark_ratio >= 0.22
-                and region_height >= 10
-            ):
-
-                likely_bold = True
-
-            # Large dark text
-            elif (
-                region_height >= 20
-                and dark_ratio >= 0.12
-            ):
-
-                likely_bold = True
-
-            if not likely_bold:
-                continue
-
-            # =================================================
-            # ADD PADDING AROUND THE TEXT
-            # =================================================
-
-            pad_x = max(
-                3,
-                int(region_width * 0.08)
-            )
-
-            pad_y = max(
-                3,
-                int(region_height * 0.25)
-            )
-
-            bx1 = max(
-                0,
-                x1 - pad_x
-            )
-
-            by1 = max(
-                0,
-                y1 - pad_y
-            )
-
-            bx2 = min(
-                width,
-                x2 + pad_x
-            )
-
-            by2 = min(
-                height,
-                y2 + pad_y
-            )
-
-            # =================================================
-            # BLUR INDIVIDUAL TEXT
-            # =================================================
-
-            blur_region(
-                result,
-                bx1,
-                by1,
-                bx2,
-                by2,
-                radius=7
-            )
-
-            blur_count += 1
-
-            print(
-                f"Blurred text: "
-                f"{text!r} "
-                f"dark={dark_ratio:.2f} "
-                f"thick={thick_ratio:.2f}"
-            )
-
-        print(
-            f"Proof blur complete: "
-            f"{blur_count} regions blurred."
-        )
+        print(f"[PROOF] ✅ Total blurred: {blur_count} regions")
 
         # =================================================
-        # SAVE
+        # SAVE & RETURN
         # =================================================
 
         output = io.BytesIO()
-
-        result.save(
-            output,
-            format="PNG"
-        )
-
+        result.save(output, format="PNG")
         output.seek(0)
 
         return output.getvalue()
 
     except Exception as error:
-
-        print(
-            f"Proof processing error: {error}"
-        )
-
-        # Never crash the bot because of an image
+        print(f"[PROOF] ❌ Critical error: {error}")
+        import traceback
+        traceback.print_exc()
         return image_data
 
 
@@ -1951,20 +1644,25 @@ async def proof(
         image_data = await image.read()
 
         # =================================================
-        # SCAN WHOLE IMAGE + BLUR BOLD TEXT
+        # GET BLUR MODE FROM CONFIG
+        # =================================================
+        
+        blur_everything = config.get(
+            "blur_everything",
+            True
+        )
+
+        # =================================================
+        # SCAN WHOLE IMAGE + BLUR TEXT
         # =================================================
 
         blurred_data = blur_proof_text(
-            image_data
+            image_data,
+            blur_everything=blur_everything
         )
 
         # =================================================
         # SEND PROOF
-        #
-        # NO EMBED
-        # NO SUBMITTER
-        # NO DESCRIPTION
-        # NO EXTRA FOOTER
         # =================================================
 
         file = discord.File(
