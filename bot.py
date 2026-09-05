@@ -2701,13 +2701,129 @@ async def clear(
 
     try:
 
-        deleted = await interaction.channel.purge(
-            limit=amount
-        )
+        # =====================================================
+        # GET THE EARLIEST / OLDEST MESSAGES FIRST
+        # =====================================================
+
+        messages = []
+
+        async for message in interaction.channel.history(
+            limit=amount,
+            oldest_first=True
+        ):
+
+            messages.append(message)
+
+            if len(messages) >= amount:
+                break
+
+        if not messages:
+
+            return await interaction.followup.send(
+
+                "❌ There are no messages to delete.",
+
+                ephemeral=True
+            )
+
+        # =====================================================
+        # DELETE THE SELECTED OLDEST MESSAGES
+        # =====================================================
+
+        deleted_count = 0
+
+        # Discord bulk deletion only works for messages
+        # newer than 14 days. Older messages must be deleted
+        # individually.
+        bulk_messages = []
+
+        for message in messages:
+
+            age = (
+                discord.utils.utcnow()
+                - message.created_at
+            )
+
+            if age.days < 14:
+
+                bulk_messages.append(
+                    message
+                )
+
+            else:
+
+                try:
+
+                    await message.delete()
+
+                    deleted_count += 1
+
+                except discord.NotFound:
+
+                    pass
+
+                except discord.Forbidden:
+
+                    pass
+
+                except discord.HTTPException as error:
+
+                    print(
+                        f"Old message delete error: {error}"
+                    )
+
+        # =====================================================
+        # BULK DELETE NEWER MESSAGES
+        # =====================================================
+
+        if bulk_messages:
+
+            try:
+
+                deleted = (
+                    await interaction.channel.delete_messages(
+                        bulk_messages
+                    )
+                )
+
+                deleted_count += len(
+                    deleted
+                )
+
+            except discord.HTTPException:
+
+                # Fallback to individual deletion
+                # if bulk deletion fails.
+                for message in bulk_messages:
+
+                    try:
+
+                        await message.delete()
+
+                        deleted_count += 1
+
+                    except discord.NotFound:
+
+                        pass
+
+                    except discord.Forbidden:
+
+                        pass
+
+                    except discord.HTTPException as error:
+
+                        print(
+                            f"Message delete error: {error}"
+                        )
+
+        # =====================================================
+        # RESULT
+        # =====================================================
 
         await interaction.followup.send(
 
-            f"🗑️ Deleted **{len(deleted)}** messages.",
+            f"🗑️ Deleted **{deleted_count}** "
+            f"earliest message(s).",
 
             ephemeral=True
         )
@@ -2718,6 +2834,20 @@ async def clear(
 
             "❌ I don't have permission "
             "to delete messages.",
+
+            ephemeral=True
+        )
+
+    except discord.HTTPException as error:
+
+        print(
+            f"Clear command error: {error}"
+        )
+
+        await interaction.followup.send(
+
+            "❌ Discord returned an error "
+            "while deleting messages.",
 
             ephemeral=True
         )
