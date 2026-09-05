@@ -161,13 +161,12 @@ def is_staff(interaction: discord.Interaction):
 # =========================================================
 
 def blur_proof_text(image_data: bytes, blur_everything: bool = True) -> bytes:
-
+    """Blur only the username line on every proof card."""
     try:
-        print("[PROOF] Starting card-aware black username scan...")
+        print("[PROOF] Starting proof-card username blur...")
 
         original = Image.open(io.BytesIO(image_data)).convert("RGB")
         width, height = original.size
-
         if width <= 0 or height <= 0:
             return image_data
 
@@ -175,642 +174,136 @@ def blur_proof_text(image_data: bytes, blur_everything: bool = True) -> bytes:
         gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
 
         # -------------------------------------------------
-        # 1. FIND LIGHT/WHITE CARDS
+        # 1. FIND EVERY PROOF CARD
         # -------------------------------------------------
+        # Use a vertical sample through the left card column. This avoids
+        # accidentally merging the cards with the bright item slots on
+        # the right side of the screenshot.
+        anchor_x = min(width - 1, max(1, int(width * 0.27)))
+        bright_col = (gray[:, anchor_x] >= 205).astype(np.uint8) * 255
 
-        # The cards in the supplied template are much lighter
-        # than the gray page background.
-        light_mask = cv2.inRange(gray, 215, 255)
+        # Keep the natural gray gap between separate cards. A large
+        # vertical close can merge the bottom of one card into the next.
+        # The anchor column is already continuous through each card.
 
-        # Fill small gaps caused by rounded corners/text.
-        light_mask = cv2.morphologyEx(
-            light_mask,
-            cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15)),
-            iterations=2
-        )
+        runs = []
+        start_y = None
 
-        light_mask = cv2.morphologyEx(
-            light_mask,
-            cv2.MORPH_OPEN,
-            cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)),
-            iterations=1
-        )
+        for yy, value in enumerate(bright_col):
+            if value and start_y is None:
+                start_y = yy
+            elif not value and start_y is not None:
+                if yy - start_y >= 45:
+                    runs.append((start_y, yy - 1))
+                start_y = None
 
-        contours, _ = cv2.findContours(
-            light_mask,
-            cv2.RETR_EXTERNAL,
-            cv2.CHAIN_APPROX_SIMPLE
-        )
+        if start_y is not None and height - start_y >= 45:
+            runs.append((start_y, height - 1))
 
         cards = []
 
-        for contour in contours:
-            x, y, w, h = cv2.boundingRect(contour)
-            area = w * h
+        for top, bottom in runs:
+            card_h = bottom - top + 1
 
-            # A proof card is a reasonably wide rectangle.
-            if w < max(100, int(width * 0.25)):
-                continue
+            # Search near the top of the card for the large white horizontal
+            # body and use it to estimate the card's left/right boundaries.
+            sample_y = min(height - 1, top + min(12, max(4, card_h // 10)))
+            row_mask = (gray[sample_y] >= 205).astype(np.uint8)
 
-            if h < 45:
-                continue
+            # Join small breaks in the white card edge.
+            row_mask = cv2.morphologyEx(
+                row_mask.reshape(1, -1),
+                cv2.MORPH_CLOSE,
+                np.ones((1, 21), np.uint8),
+                iterations=1
+            ).reshape(-1)
 
-            if area < width * height * 0.015:
-                continue
+            segments = []
+            sx = None
 
-            if w > width * 0.75:
-                continue
+            for xx, value in enumerate(row_mask):
+                if value and sx is None:
+                    sx = xx
+                elif not value and sx is not None:
+                    if xx - sx >= max(120, int(width * 0.30)):
+                        segments.append((sx, xx - 1))
+                    sx = None
 
-            if h > height * 0.70:
-                continue
+            if sx is not None and width - sx >= max(120, int(width * 0.30)):
+                segments.append((sx, width - 1))
 
-            aspect = w / max(h, 1)
-
-            if aspect < 1.4:
-                continue
-
-            # Verify that the inside is actually light.
-            ix1 = min(width - 1, x + 5)
-            iy1 = min(height - 1, y + 5)
-            ix2 = max(ix1 + 1, min(width, x + w - 5))
-            iy2 = max(iy1 + 1, min(height, y + h - 5))
-
-            inside = gray[iy1:iy2, ix1:ix2]
-
-            if inside.size == 0:
-                continue
-
-            light_ratio = np.mean(inside >= 210)
-
-            if light_ratio < 0.45:
-                continue
-
-            cards.append((x, y, w, h))
-
-        # Merge cards that overlap or are almost identical.
-        merged_cards = []
-
-        for card in sorted(cards, key=lambda c: (c[1], c[0])):
-            x, y, w, h = card
-            x2 = x + w
-            y2 = y + h
-
-            merged = False
-
-            for i, old in enumerate(merged_cards):
-                ox, oy, ow, oh = old
-                ox2 = ox + ow
-                oy2 = oy + oh
-
-                overlap_x = min(x2, ox2) - max(x, ox)
-                overlap_y = min(y2, oy2) - max(y, oy)
-
-                close = (
-                    abs(x - ox) <= 8
-                    and abs(y - oy) <= 8
-                )
-
-                if overlap_x > 0 and overlap_y > 0 or close:
-                    nx1 = min(x, ox)
-                    ny1 = min(y, oy)
-                    nx2 = max(x2, ox2)
-                    ny2 = max(y2, oy2)
-                    merged_cards[i] = (
-                        nx1,
-                        ny1,
-                        nx2 - nx1,
-                        ny2 - ny1
-                    )
-                    merged = True
+            # Pick the wide bright segment containing the left-side anchor.
+            chosen = None
+            for left, right in segments:
+                if left <= anchor_x <= right and left < width * 0.20:
+                    chosen = (left, right)
                     break
 
-            if not merged:
-                merged_cards.append(card)
+            if chosen is None:
+                # Reliable fallback for this proof layout: the proof cards
+                # occupy roughly the left half of the image.
+                left = max(0, int(width * 0.02))
+                right = min(width - 1, int(width * 0.54))
+            else:
+                left, right = chosen
 
-        cards = merged_cards
+            card_w = right - left + 1
+            if card_w < max(140, int(width * 0.30)):
+                continue
 
-        print(f"[PROOF] Light cards found: {len(cards)}")
+            cards.append((left, top, card_w, card_h))
 
-        # -------------------------------------------------
-        # 2. FALLBACK CARD DETECTION
-        # -------------------------------------------------
-        #
-        # If anti-aliasing prevents the white-card detector
-        # from finding a card, look for large bright areas.
-        # This still stays restricted to the top text zone.
-        # -------------------------------------------------
+        print(f"[PROOF] Proof cards found: {len(cards)}")
 
         if not cards:
-            print("[PROOF] No cards found with primary detector; using fallback.")
-
-            fallback = cv2.threshold(
-                gray,
-                195,
-                255,
-                cv2.THRESH_BINARY
-            )[1]
-
-            fallback = cv2.morphologyEx(
-                fallback,
-                cv2.MORPH_CLOSE,
-                cv2.getStructuringElement(cv2.MORPH_RECT, (25, 15)),
-                iterations=2
-            )
-
-            contours, _ = cv2.findContours(
-                fallback,
-                cv2.RETR_EXTERNAL,
-                cv2.CHAIN_APPROX_SIMPLE
-            )
-
-            for contour in contours:
-                x, y, w, h = cv2.boundingRect(contour)
-
-                if w < width * 0.25:
-                    continue
-
-                if h < 45:
-                    continue
-
-                if w / max(h, 1) < 1.4:
-                    continue
-
-                cards.append((x, y, w, h))
-
-        # -------------------------------------------------
-        # 3. SCAN ONLY THE NAME AREA
-        # -------------------------------------------------
-
-        name_regions = []
-
-        for x, y, w, h in cards:
-
-            # The username is near the very top of the card.
-            #
-            # Example:
-            # card top
-            #   ↓
-            #   Arthurbns29   <-- target
-            #   Sep 5, 2026
-            #   10:30 PM
-            #   [View] [Report]
-            #
-            # We deliberately stop before the buttons.
-
-            top_margin = max(4, int(h * 0.035))
-            band_height = min(
-                max(34, int(h * 0.34)),
-                72
-            )
-
-            nx1 = max(0, x + 8)
-            ny1 = max(0, y + top_margin)
-            nx2 = min(width, x + int(w * 0.62))
-            ny2 = min(height, y + band_height)
-
-            if nx2 <= nx1 or ny2 <= ny1:
-                continue
-
-            roi = gray[ny1:ny2, nx1:nx2]
-
-            if roi.size == 0:
-                continue
-
-            # -------------------------------------------------
-            # BLACK/DARK PIXEL MASK
-            # -------------------------------------------------
-
-            # Usernames are genuinely dark. Date/time is lower
-            # and therefore normally outside this region.
-            dark = cv2.inRange(
-                roi,
-                0,
-                105
-            )
-
-            # Remove tiny noise.
-            dark = cv2.morphologyEx(
-                dark,
-                cv2.MORPH_OPEN,
-                cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)),
-                iterations=1
-            )
-
-            # Connect letters in the username.
-            grouped = cv2.dilate(
-                dark,
-                cv2.getStructuringElement(cv2.MORPH_RECT, (5, 2)),
-                iterations=1
-            )
-
-            grouped = cv2.morphologyEx(
-                grouped,
-                cv2.MORPH_CLOSE,
-                cv2.getStructuringElement(cv2.MORPH_RECT, (13, 3)),
-                iterations=2
-            )
-
-            text_contours, _ = cv2.findContours(
-                grouped,
-                cv2.RETR_EXTERNAL,
-                cv2.CHAIN_APPROX_SIMPLE
-            )
-
-            local_candidates = []
-
-            for contour in text_contours:
-
-                cx, cy, cw, ch = cv2.boundingRect(contour)
-
-                if cw < 15:
-                    continue
-
-                if ch < 7:
-                    continue
-
-                if ch > 45:
-                    continue
-
-                if cw > roi.shape[1] * 0.95:
-                    continue
-
-                aspect = cw / max(ch, 1)
-
-                # Username-like horizontal shape.
-                if aspect < 1.4:
-                    continue
-
-                box = roi[
-                    max(0, cy):min(roi.shape[0], cy + ch),
-                    max(0, cx):min(roi.shape[1], cx + cw)
-                ]
-
-                if box.size == 0:
-                    continue
-
-                dark_ratio = np.mean(box <= 120)
-
-                # Bold text should have enough dark pixels.
-                if dark_ratio < 0.035:
-                    continue
-
-                # Check the surrounding pixels are substantially
-                # lighter than the text.
-                pad = 4
-
-                sx1 = max(0, cx - pad)
-                sy1 = max(0, cy - pad)
-                sx2 = min(roi.shape[1], cx + cw + pad)
-                sy2 = min(roi.shape[0], cy + ch + pad)
-
-                surrounding = roi[sy1:sy2, sx1:sx2]
-
-                if surrounding.size == 0:
-                    continue
-
-                surrounding_mean = float(np.mean(surrounding))
-                box_mean = float(np.mean(box))
-
-                if surrounding_mean < 145:
-                    continue
-
-                if surrounding_mean - box_mean < 25:
-                    continue
-
-                local_candidates.append(
-                    (
-                        cx,
-                        cy,
-                        cx + cw,
-                        cy + ch,
-                        dark_ratio
-                    )
-                )
-
-            # -------------------------------------------------
-            # 4. OCR FALLBACK INSIDE THE NAME BAND ONLY
-            # -------------------------------------------------
-
-            # OCR is NOT run over the whole screenshot anymore.
-            # It is restricted to the top of a detected card.
-            #
-            # This prevents OCR from selecting View/Report,
-            # dates, icons, and the refresh symbol.
-
-            try:
-                up = cv2.resize(
-                    roi,
-                    None,
-                    fx=3,
-                    fy=3,
-                    interpolation=cv2.INTER_CUBIC
-                )
-
-                ocr_data = pytesseract.image_to_data(
-                    up,
-                    config="--oem 3 --psm 7",
-                    output_type=pytesseract.Output.DICT
-                )
-
-                texts = ocr_data.get("text", [])
-                lefts = ocr_data.get("left", [])
-                tops = ocr_data.get("top", [])
-                widths = ocr_data.get("width", [])
-                heights = ocr_data.get("height", [])
-                confs = ocr_data.get("conf", [])
-
-                for i, text in enumerate(texts):
-
-                    text = str(text).strip()
-
-                    if not text:
-                        continue
-
-                    try:
-                        conf = float(confs[i])
-                    except Exception:
-                        conf = 0
-
-                    if conf < 15:
-                        continue
-
-                    ox = int(lefts[i] / 3)
-                    oy = int(tops[i] / 3)
-                    ow = int(widths[i] / 3)
-                    oh = int(heights[i] / 3)
-
-                    if ow < 15 or oh < 6:
-                        continue
-
-                    ox2 = min(roi.shape[1], ox + ow)
-                    oy2 = min(roi.shape[0], oy + oh)
-
-                    if ox2 <= ox or oy2 <= oy:
-                        continue
-
-                    ocr_box = roi[oy:oy2, ox:ox2]
-
-                    if ocr_box.size == 0:
-                        continue
-
-                    dark_ratio = np.mean(ocr_box <= 125)
-
-                    if dark_ratio < 0.025:
-                        continue
-
-                    local_candidates.append(
-                        (
-                            ox,
-                            oy,
-                            ox2,
-                            oy2,
-                            dark_ratio
-                        )
-                    )
-
-            except Exception as e:
-                print(f"[PROOF] OCR fallback error: {e}")
-
-            # -------------------------------------------------
-            # 5. MERGE NAME PIECES
-            # -------------------------------------------------
-
-            if not local_candidates:
-                continue
-
-            local_candidates.sort(key=lambda r: (r[1], r[0]))
-
-            # Start with each candidate and merge pieces that
-            # belong to the same horizontal username.
-            merged = []
-
-            for candidate in local_candidates:
-
-                cx1, cy1, cx2, cy2, score = candidate
-
-                found = False
-
-                for j, current in enumerate(merged):
-
-                    mx1, my1, mx2, my2 = current
-
-                    horizontal_gap = max(
-                        0,
-                        max(mx1 - cx2, cx1 - mx2)
-                    )
-
-                    vertical_gap = max(
-                        0,
-                        max(my1 - cy2, cy1 - my2)
-                    )
-
-                    height1 = cy2 - cy1
-                    height2 = my2 - my1
-
-                    similar_height = (
-                        min(height1, height2)
-                        >= max(4, int(max(height1, height2) * 0.45))
-                    )
-
-                    if (
-                        horizontal_gap <= 14
-                        and vertical_gap <= 10
-                        and similar_height
-                    ):
-                        merged[j] = (
-                            min(mx1, cx1),
-                            min(my1, cy1),
-                            max(mx2, cx2),
-                            max(my2, cy2)
-                        )
-                        found = True
-                        break
-
-                if not found:
-                    merged.append(
-                        (cx1, cy1, cx2, cy2)
-                    )
-
-            # -------------------------------------------------
-            # 6. ACCEPT ONLY THE MOST USERNAME-LIKE LINE
-            # -------------------------------------------------
-
-            for mx1, my1, mx2, my2 in merged:
-
-                mw = mx2 - mx1
-                mh = my2 - my1
-
-                if mw < 18 or mh < 6:
-                    continue
-
-                if mw / max(mh, 1) < 1.5:
-                    continue
-
-                # Convert back to full-image coordinates.
-                fx1 = nx1 + mx1
-                fy1 = ny1 + my1
-                fx2 = nx1 + mx2
-                fy2 = ny1 + my2
-
-                # Extra verification against original image.
-                check = gray[
-                    max(0, fy1):min(height, fy2),
-                    max(0, fx1):min(width, fx2)
-                ]
-
-                if check.size == 0:
-                    continue
-
-                black_ratio = np.mean(check <= 125)
-
-                if black_ratio < 0.025:
-                    continue
-
-                # Only accept text in the upper portion of the
-                # card. This is the most important protection
-                # against dates, buttons, and icons.
-                relative_y = fy1 - y
-
-                if relative_y > min(72, int(h * 0.40)):
-                    continue
-
-                name_regions.append(
-                    (
-                        fx1,
-                        fy1,
-                        fx2,
-                        fy2
-                    )
-                )
-
-        print(f"[PROOF] Username regions found: {len(name_regions)}")
-
-        # -------------------------------------------------
-        # 7. DEDUPLICATE / MERGE FINAL REGIONS
-        # -------------------------------------------------
-
-        final_regions = []
-
-        for region in name_regions:
-
-            x1, y1, x2, y2 = region
-
-            merged = False
-
-            for i, old in enumerate(final_regions):
-
-                ox1, oy1, ox2, oy2 = old
-
-                overlap_x = min(x2, ox2) - max(x1, ox1)
-                overlap_y = min(y2, oy2) - max(y1, oy1)
-
-                if overlap_x > 0 and overlap_y > 0:
-                    final_regions[i] = (
-                        min(x1, ox1),
-                        min(y1, oy1),
-                        max(x2, ox2),
-                        max(y2, oy2)
-                    )
-                    merged = True
-                    break
-
-            if not merged:
-                final_regions.append(region)
-
-        # -------------------------------------------------
-        # 8. BUILD SMALL LOCAL MASKS
-        # -------------------------------------------------
-
-        mask = np.zeros(
-            (height, width),
-            dtype=np.uint8
-        )
-
-        accepted = 0
-
-        for x1, y1, x2, y2 in final_regions:
-
-            rw = x2 - x1
-            rh = y2 - y1
-
-            if rw < 18 or rh < 6:
-                continue
-
-            # Padding is deliberately small.
-            # We want the name covered, but NOT the date.
-            pad_x = max(5, int(rw * 0.08))
-            pad_y = max(4, int(rh * 0.45))
-
-            bx1 = max(0, x1 - pad_x)
-            by1 = max(0, y1 - pad_y)
-            bx2 = min(width, x2 + pad_x)
-            by2 = min(height, y2 + pad_y)
-
-            cv2.rectangle(
-                mask,
-                (bx1, by1),
-                (bx2, by2),
-                255,
-                -1
-            )
-
-            accepted += 1
-
-        print(f"[PROOF] Final username regions: {accepted}")
-
-        if accepted == 0:
-            print("[PROOF] No username text found; returning original.")
+            print("[PROOF] No proof cards found; returning original.")
             return image_data
 
-        # Tiny expansion for anti-aliased edges.
+        # -------------------------------------------------
+        # 2. USERNAME-ONLY MASK ON EVERY CARD
+        # -------------------------------------------------
+        mask = np.zeros((height, width), dtype=np.uint8)
+
+        for x, y, w, h in cards:
+            # Username is the first line at the top-left.
+            # Keep the blur above the date line.
+            bx1 = max(0, x + 7)
+            bx2 = min(width, x + max(125, int(w * 0.46)))
+
+            by1 = max(0, y + 5)
+            username_height = max(24, min(36, int(h * 0.24)))
+            by2 = min(height, by1 + username_height)
+
+            if bx2 > bx1 and by2 > by1:
+                cv2.rectangle(mask, (bx1, by1), (bx2, by2), 255, -1)
+
+        if not np.any(mask):
+            return image_data
+
         mask = cv2.dilate(
             mask,
-            cv2.getStructuringElement(
-                cv2.MORPH_ELLIPSE,
-                (3, 3)
-            ),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
             iterations=1
         )
 
         # -------------------------------------------------
-        # 9. STRONG LOCAL BLUR
+        # 3. STRONG LOCAL BLUR
         # -------------------------------------------------
-
-        blurred = original.filter(
-            ImageFilter.GaussianBlur(radius=32)
+        blurred = original.filter(ImageFilter.GaussianBlur(radius=28))
+        mask_image = Image.fromarray(mask, mode="L").filter(
+            ImageFilter.GaussianBlur(radius=0.6)
         )
 
-        mask_image = Image.fromarray(mask, mode="L")
+        result = Image.composite(blurred, original, mask_image)
 
-        # Keep edges reasonably hard so the entire name is hidden.
-        mask_image = mask_image.filter(
-            ImageFilter.GaussianBlur(radius=0.7)
-        )
-
-        result = Image.composite(
-            blurred,
-            original,
-            mask_image
-        )
-
-        # One extra pass only inside the mask.
-        extra_blur = result.filter(
-            ImageFilter.GaussianBlur(radius=10)
-        )
-
-        result = Image.composite(
-            extra_blur,
-            result,
-            mask_image
-        )
+        extra_blur = result.filter(ImageFilter.GaussianBlur(radius=9))
+        result = Image.composite(extra_blur, result, mask_image)
 
         output = io.BytesIO()
         result.save(output, format="PNG")
         output.seek(0)
 
-        print("[PROOF] Black username text blurred successfully.")
-
+        print(f"[PROOF] Blurred username area on {len(cards)} card(s).")
         return output.getvalue()
 
     except Exception as e:
