@@ -317,14 +317,12 @@ def is_date_or_time(text):
     if not text_lower:
         return True
 
-    # Common date/time characters
     if ":" in text_lower:
         return True
 
     if "/" in text_lower:
         return True
 
-    # Month names
     months = [
         "jan",
         "january",
@@ -357,7 +355,6 @@ def is_date_or_time(text):
         if month in text_lower:
             return True
 
-    # Pure numbers are usually dates
     if text_lower.replace(
         ",",
         ""
@@ -472,6 +469,7 @@ def blur_proof_text(
             return image_data
 
         rgb = np.array(original)
+
         gray = cv2.cvtColor(
             rgb,
             cv2.COLOR_RGB2GRAY
@@ -480,8 +478,6 @@ def blur_proof_text(
         # =========================================================
         # 1. DETECT THE LEFT-SIDE PROOF CARDS
         # =========================================================
-        # The proof cards are large light rectangles on the left.
-        # The item grid on the right is intentionally excluded.
 
         left_limit = min(
             width,
@@ -494,7 +490,6 @@ def blur_proof_text(
             255
         )
 
-        # Fill small gaps while keeping separate cards separate.
         card_mask = cv2.morphologyEx(
             light,
             cv2.MORPH_CLOSE,
@@ -516,9 +511,15 @@ def blur_proof_text(
         cards = []
 
         for contour in contours:
-            x, y, w, h = cv2.boundingRect(contour)
 
-            if w < max(160, int(width * 0.30)):
+            x, y, w, h = cv2.boundingRect(
+                contour
+            )
+
+            if w < max(
+                160,
+                int(width * 0.30)
+            ):
                 continue
 
             if h < 45:
@@ -530,70 +531,135 @@ def blur_proof_text(
             if w / max(h, 1) < 1.5:
                 continue
 
-            # Make sure this is actually a light card rather than
-            # an unrelated bright region.
-            ix1 = max(0, x + 5)
-            iy1 = max(0, y + 5)
-            ix2 = min(width, x + w - 5)
-            iy2 = min(height, y + h - 5)
+            ix1 = max(
+                0,
+                x + 5
+            )
+
+            iy1 = max(
+                0,
+                y + 5
+            )
+
+            ix2 = min(
+                width,
+                x + w - 5
+            )
+
+            iy2 = min(
+                height,
+                y + h - 5
+            )
 
             if ix2 <= ix1 or iy2 <= iy1:
                 continue
 
-            inside = gray[iy1:iy2, ix1:ix2]
+            inside = gray[
+                iy1:iy2,
+                ix1:ix2
+            ]
 
             if inside.size == 0:
                 continue
 
-            if float(np.mean(inside >= 185)) < 0.40:
+            if float(
+                np.mean(inside >= 185)
+            ) < 0.40:
                 continue
 
-            cards.append((x, y, w, h))
+            cards.append(
+                (
+                    x,
+                    y,
+                    w,
+                    h
+                )
+            )
 
         # ---------------------------------------------------------
         # Row-projection fallback.
-        # This is important for cards that are partially visible or
-        # whose lower half contains colored buttons.
         # ---------------------------------------------------------
-        projection = (light[:, :left_limit] > 0).mean(axis=1)
+
+        projection = (
+            light[:, :left_limit] > 0
+        ).mean(axis=1)
 
         runs = []
         run_start = None
 
-        for yy, density in enumerate(projection):
+        for yy, density in enumerate(
+            projection
+        ):
+
             active = density >= 0.50
 
             if active and run_start is None:
+
                 run_start = yy
 
-            elif not active and run_start is not None:
+            elif (
+                not active
+                and run_start is not None
+            ):
+
                 if yy - run_start >= 20:
-                    runs.append((run_start, yy))
+
+                    runs.append(
+                        (
+                            run_start,
+                            yy
+                        )
+                    )
+
                 run_start = None
 
-        if run_start is not None and height - run_start >= 20:
-            runs.append((run_start, height))
+        if (
+            run_start is not None
+            and height - run_start >= 20
+        ):
+
+            runs.append(
+                (
+                    run_start,
+                    height
+                )
+            )
 
         for ry1, ry2 in runs:
-            # We only need the upper portion for username detection,
-            # so a projection run can safely represent a card even
-            # when only part of that card is visible.
-            span = gray[ry1:ry2, :left_limit]
+
+            span = gray[
+                ry1:ry2,
+                :left_limit
+            ]
 
             if span.size == 0:
                 continue
 
-            col_density = (span >= 185).mean(axis=0)
-            active_cols = np.where(col_density >= 0.35)[0]
+            col_density = (
+                span >= 185
+            ).mean(axis=0)
+
+            active_cols = np.where(
+                col_density >= 0.35
+            )[0]
 
             if active_cols.size == 0:
                 continue
 
-            x1 = int(active_cols.min())
-            x2 = int(active_cols.max()) + 1
+            x1 = int(
+                active_cols.min()
+            )
+
+            x2 = int(
+                active_cols.max()
+            ) + 1
+
             rw = x2 - x1
 
-            if rw < max(160, int(width * 0.30)):
+            if rw < max(
+                160,
+                int(width * 0.30)
+            ):
                 continue
 
             cards.append(
@@ -601,31 +667,62 @@ def blur_proof_text(
                     x1,
                     ry1,
                     rw,
-                    max(45, ry2 - ry1)
+                    max(
+                        45,
+                        ry2 - ry1
+                    )
                 )
             )
 
         # ---------------------------------------------------------
         # Merge duplicate card detections.
         # ---------------------------------------------------------
+
         merged_cards = []
 
-        for card in sorted(cards, key=lambda c: (c[1], c[0])):
+        for card in sorted(
+            cards,
+            key=lambda c: (
+                c[1],
+                c[0]
+            )
+        ):
+
             x, y, w, h = card
+
             x2 = x + w
             y2 = y + h
+
             merged = False
 
-            for i, old in enumerate(merged_cards):
+            for i, old in enumerate(
+                merged_cards
+            ):
+
                 ox, oy, ow, oh = old
+
                 ox2 = ox + ow
                 oy2 = oy + oh
 
-                overlap_x = min(x2, ox2) - max(x, ox)
-                overlap_y = min(y2, oy2) - max(y, oy)
+                overlap_x = (
+                    min(x2, ox2)
+                    - max(x, ox)
+                )
+
+                overlap_y = (
+                    min(y2, oy2)
+                    - max(y, oy)
+                )
 
                 same_card = (
-                    overlap_x > max(20, int(min(w, ow) * 0.45))
+                    overlap_x
+                    > max(
+                        20,
+                        int(
+                            min(w, ow)
+                            * 0.45
+                        )
+                    )
                     and overlap_y > 0
                 )
 
@@ -635,30 +732,50 @@ def blur_proof_text(
                     and abs(w - ow) <= 25
                 )
 
-                if same_card or close_same_card:
+                if (
+                    same_card
+                    or close_same_card
+                ):
+
                     merged_cards[i] = (
                         min(x, ox),
                         min(y, oy),
-                        max(x2, ox2) - min(x, ox),
-                        max(y2, oy2) - min(y, oy)
+                        max(x2, ox2)
+                        - min(x, ox),
+                        max(y2, oy2)
+                        - min(y, oy)
                     )
+
                     merged = True
+
                     break
 
             if not merged:
-                merged_cards.append(card)
+
+                merged_cards.append(
+                    card
+                )
 
         cards = sorted(
             merged_cards,
-            key=lambda c: (c[1], c[0])
+            key=lambda c: (
+                c[1],
+                c[0]
+            )
         )
 
         print(
-            f"[PROOF] Visible proof cards detected: {len(cards)}"
+            f"[PROOF] Visible proof cards detected: "
+            f"{len(cards)}"
         )
 
         if not cards:
-            print("[PROOF] No proof cards detected; returning original image.")
+
+            print(
+                "[PROOF] No proof cards detected; "
+                "returning original image."
+            )
+
             return image_data
 
         # =========================================================
@@ -667,15 +784,29 @@ def blur_proof_text(
 
         username_regions = []
 
-        for card_index, (x, y, w, h) in enumerate(cards, 1):
-            # Username is on the first text line of the card.
-            # Keep this band above the date/time line.
-            band_top = max(0, y + 5)
+        for card_index, (
+            x,
+            y,
+            w,
+            h
+        ) in enumerate(
+            cards,
+            1
+        ):
+
+            band_top = max(
+                0,
+                y + 5
+            )
+
             band_bottom = min(
                 height,
                 y + min(
                     58,
-                    max(38, int(h * 0.42))
+                    max(
+                        38,
+                        int(h * 0.42)
+                    )
                 )
             )
 
@@ -689,7 +820,10 @@ def blur_proof_text(
                 x + int(w * 0.60)
             )
 
-            if band_right <= band_left or band_bottom <= band_top:
+            if (
+                band_right <= band_left
+                or band_bottom <= band_top
+            ):
                 continue
 
             roi = gray[
@@ -703,6 +837,7 @@ def blur_proof_text(
             # -----------------------------------------------------
             # DARK TEXT DETECTOR
             # -----------------------------------------------------
+
             dark = cv2.inRange(
                 roi,
                 0,
@@ -719,7 +854,6 @@ def blur_proof_text(
                 iterations=1
             )
 
-            # Join characters belonging to the same username.
             grouped = cv2.dilate(
                 dark,
                 cv2.getStructuringElement(
@@ -748,7 +882,10 @@ def blur_proof_text(
             candidates = []
 
             for contour in contours:
-                cx, cy, cw, ch = cv2.boundingRect(contour)
+
+                cx, cy, cw, ch = cv2.boundingRect(
+                    contour
+                )
 
                 if cw < 15 or ch < 6:
                     continue
@@ -759,39 +896,72 @@ def blur_proof_text(
                 if cw > roi.shape[1] * 0.95:
                     continue
 
-                aspect = cw / max(ch, 1)
+                aspect = cw / max(
+                    ch,
+                    1
+                )
 
                 if aspect < 1.5:
                     continue
 
                 box = roi[
-                    max(0, cy):min(roi.shape[0], cy + ch),
-                    max(0, cx):min(roi.shape[1], cx + cw)
+                    max(0, cy):
+                    min(
+                        roi.shape[0],
+                        cy + ch
+                    ),
+                    max(0, cx):
+                    min(
+                        roi.shape[1],
+                        cx + cw
+                    )
                 ]
 
                 if box.size == 0:
                     continue
 
                 dark_ratio = float(
-                    np.mean(box <= 135)
+                    np.mean(
+                        box <= 135
+                    )
                 )
 
                 if dark_ratio < 0.025:
                     continue
 
-                # The username sits on a light card background.
                 pad = 5
-                sx1 = max(0, cx - pad)
-                sy1 = max(0, cy - pad)
-                sx2 = min(roi.shape[1], cx + cw + pad)
-                sy2 = min(roi.shape[0], cy + ch + pad)
 
-                surrounding = roi[sy1:sy2, sx1:sx2]
+                sx1 = max(
+                    0,
+                    cx - pad
+                )
+
+                sy1 = max(
+                    0,
+                    cy - pad
+                )
+
+                sx2 = min(
+                    roi.shape[1],
+                    cx + cw + pad
+                )
+
+                sy2 = min(
+                    roi.shape[0],
+                    cy + ch + pad
+                )
+
+                surrounding = roi[
+                    sy1:sy2,
+                    sx1:sx2
+                ]
 
                 if surrounding.size == 0:
                     continue
 
-                if float(np.mean(surrounding)) < 135:
+                if float(
+                    np.mean(surrounding)
+                ) < 135:
                     continue
 
                 candidates.append(
@@ -805,9 +975,11 @@ def blur_proof_text(
                 )
 
             # -----------------------------------------------------
-            # OCR FALLBACK — STILL RESTRICTED TO THIS CARD'S BAND
+            # OCR FALLBACK
             # -----------------------------------------------------
+
             try:
+
                 up = cv2.resize(
                     roi,
                     None,
@@ -822,55 +994,117 @@ def blur_proof_text(
                     output_type=pytesseract.Output.DICT
                 )
 
-                texts = ocr_data.get("text", [])
-                lefts = ocr_data.get("left", [])
-                tops = ocr_data.get("top", [])
-                widths = ocr_data.get("width", [])
-                heights = ocr_data.get("height", [])
-                confs = ocr_data.get("conf", [])
+                texts = ocr_data.get(
+                    "text",
+                    []
+                )
 
-                for i, text in enumerate(texts):
-                    text = str(text).strip()
+                lefts = ocr_data.get(
+                    "left",
+                    []
+                )
+
+                tops = ocr_data.get(
+                    "top",
+                    []
+                )
+
+                widths = ocr_data.get(
+                    "width",
+                    []
+                )
+
+                heights = ocr_data.get(
+                    "height",
+                    []
+                )
+
+                confs = ocr_data.get(
+                    "conf",
+                    []
+                )
+
+                for i, text in enumerate(
+                    texts
+                ):
+
+                    text = str(
+                        text
+                    ).strip()
 
                     if not text:
                         continue
 
-                    # Do not allow OCR to turn dates/times into targets.
-                    if is_date_or_time(text):
+                    if is_date_or_time(
+                        text
+                    ):
                         continue
 
-                    if is_button_text(text):
+                    if is_button_text(
+                        text
+                    ):
                         continue
 
                     try:
-                        conf = float(confs[i])
+
+                        conf = float(
+                            confs[i]
+                        )
+
                     except Exception:
+
                         conf = 0
 
                     if conf < 10:
                         continue
 
-                    ox = int(lefts[i] / 3)
-                    oy = int(tops[i] / 3)
-                    ow = int(widths[i] / 3)
-                    oh = int(heights[i] / 3)
+                    ox = int(
+                        lefts[i] / 3
+                    )
+
+                    oy = int(
+                        tops[i] / 3
+                    )
+
+                    ow = int(
+                        widths[i] / 3
+                    )
+
+                    oh = int(
+                        heights[i] / 3
+                    )
 
                     if ow < 15 or oh < 5:
                         continue
 
-                    ox2 = min(roi.shape[1], ox + ow)
-                    oy2 = min(roi.shape[0], oy + oh)
+                    ox2 = min(
+                        roi.shape[1],
+                        ox + ow
+                    )
 
-                    if ox2 <= ox or oy2 <= oy:
+                    oy2 = min(
+                        roi.shape[0],
+                        oy + oh
+                    )
+
+                    if (
+                        ox2 <= ox
+                        or oy2 <= oy
+                    ):
                         continue
 
-                    ocr_box = roi[oy:oy2, ox:ox2]
+                    ocr_box = roi[
+                        oy:oy2,
+                        ox:ox2
+                    ]
 
                     if ocr_box.size == 0:
                         continue
 
                     dark_ratio = float(
-                        np.mean(ocr_box <= 140)
+                        np.mean(
+                            ocr_box <= 140
+                        )
                     )
 
                     if dark_ratio < 0.02:
@@ -887,98 +1121,158 @@ def blur_proof_text(
                     )
 
             except Exception as error:
+
                 print(
-                    f"[PROOF] OCR fallback error on card "
-                    f"{card_index}: {error}"
+                    f"[PROOF] OCR fallback error "
+                    f"on card {card_index}: {error}"
                 )
 
             if not candidates:
+
                 print(
-                    f"[PROOF] Card {card_index}: no username candidate."
+                    f"[PROOF] Card {card_index}: "
+                    f"no username candidate."
                 )
+
                 continue
 
             # -----------------------------------------------------
-            # MERGE NEIGHBOURING PIECES OF THE SAME USERNAME
+            # MERGE NEIGHBOURING PIECES
             # -----------------------------------------------------
+
             candidates.sort(
-                key=lambda item: (item[1], item[0])
+                key=lambda item: (
+                    item[1],
+                    item[0]
+                )
             )
 
             merged = []
 
-            for cx1, cy1, cx2, cy2, score in candidates:
+            for (
+                cx1,
+                cy1,
+                cx2,
+                cy2,
+                score
+            ) in candidates:
+
                 found = False
 
-                for j, current in enumerate(merged):
+                for j, current in enumerate(
+                    merged
+                ):
+
                     mx1, my1, mx2, my2 = current
 
                     horizontal_gap = max(
                         0,
-                        max(mx1 - cx2, cx1 - mx2)
+                        max(
+                            mx1 - cx2,
+                            cx1 - mx2
+                        )
                     )
 
                     vertical_gap = max(
                         0,
-                        max(my1 - cy2, cy1 - my2)
+                        max(
+                            my1 - cy2,
+                            cy1 - my2
+                        )
                     )
 
                     if (
                         horizontal_gap <= 16
                         and vertical_gap <= 9
                     ):
+
                         merged[j] = (
                             min(mx1, cx1),
                             min(my1, cy1),
                             max(mx2, cx2),
                             max(my2, cy2)
                         )
+
                         found = True
+
                         break
 
                 if not found:
+
                     merged.append(
-                        (cx1, cy1, cx2, cy2)
+                        (
+                            cx1,
+                            cy1,
+                            cx2,
+                            cy2
+                        )
                     )
 
             # -----------------------------------------------------
-            # CHOOSE THE MOST USERNAME-LIKE LINE
+            # CHOOSE MOST USERNAME-LIKE LINE
             # -----------------------------------------------------
+
             best = None
             best_score = -1
 
-            for mx1, my1, mx2, my2 in merged:
+            for (
+                mx1,
+                my1,
+                mx2,
+                my2
+            ) in merged:
+
                 mw = mx2 - mx1
                 mh = my2 - my1
 
                 if mw < 18 or mh < 5:
                     continue
 
-                if mw / max(mh, 1) < 1.5:
+                if mw / max(
+                    mh,
+                    1
+                ) < 1.5:
                     continue
 
-                # Username should be in the upper portion of card.
-                full_y = band_top + my1
+                full_y = (
+                    band_top
+                    + my1
+                )
 
                 if full_y > y + 58:
                     continue
 
                 check = gray[
-                    max(0, band_top + my1):min(height, band_top + my2),
-                    max(0, band_left + mx1):min(width, band_left + mx2)
+                    max(
+                        0,
+                        band_top + my1
+                    ):
+                    min(
+                        height,
+                        band_top + my2
+                    ),
+                    max(
+                        0,
+                        band_left + mx1
+                    ):
+                    min(
+                        width,
+                        band_left + mx2
+                    )
                 ]
 
                 if check.size == 0:
                     continue
 
                 darkness = float(
-                    np.mean(check <= 140)
+                    np.mean(
+                        check <= 140
+                    )
                 )
 
                 if darkness < 0.02:
                     continue
 
-                # Prefer wide, dark, upper text lines.
                 score = (
                     mw
                     + darkness * 100
@@ -986,7 +1280,9 @@ def blur_proof_text(
                 )
 
                 if score > best_score:
+
                     best_score = score
+
                     best = (
                         band_left + mx1,
                         band_top + my1,
@@ -995,10 +1291,14 @@ def blur_proof_text(
                     )
 
             if best is not None:
-                username_regions.append(best)
+
+                username_regions.append(
+                    best
+                )
+
                 print(
-                    f"[PROOF] Card {card_index}: username region "
-                    f"{best}"
+                    f"[PROOF] Card {card_index}: "
+                    f"username region {best}"
                 )
 
         print(
@@ -1007,9 +1307,12 @@ def blur_proof_text(
         )
 
         if not username_regions:
+
             print(
-                "[PROOF] No username regions found; returning original."
+                "[PROOF] No username regions found; "
+                "returning original."
             )
+
             return image_data
 
         # =========================================================
@@ -1018,12 +1321,16 @@ def blur_proof_text(
 
         result = original.copy()
 
-        for x1, y1, x2, y2 in username_regions:
+        for (
+            x1,
+            y1,
+            x2,
+            y2
+        ) in username_regions:
+
             rw = x2 - x1
             rh = y2 - y1
 
-            # Small padding covers anti-aliased edges without reaching
-            # the date/time line underneath.
             pad_x = max(
                 5,
                 int(rw * 0.08)
@@ -1034,13 +1341,33 @@ def blur_proof_text(
                 int(rh * 0.35)
             )
 
-            bx1 = max(0, x1 - pad_x)
-            by1 = max(0, y1 - pad_y)
-            bx2 = min(width, x2 + pad_x)
-            by2 = min(height, y2 + pad_y)
+            bx1 = max(
+                0,
+                x1 - pad_x
+            )
+
+            by1 = max(
+                0,
+                y1 - pad_y
+            )
+
+            bx2 = min(
+                width,
+                x2 + pad_x
+            )
+
+            by2 = min(
+                height,
+                y2 + pad_y
+            )
 
             crop = result.crop(
-                (bx1, by1, bx2, by2)
+                (
+                    bx1,
+                    by1,
+                    bx2,
+                    by2
+                )
             )
 
             crop = crop.filter(
@@ -1051,7 +1378,10 @@ def blur_proof_text(
 
             result.paste(
                 crop,
-                (bx1, by1)
+                (
+                    bx1,
+                    by1
+                )
             )
 
         # =========================================================
@@ -1074,11 +1404,11 @@ def blur_proof_text(
         return output.getvalue()
 
     except Exception as error:
+
         print(
             f"Proof processing error: {error}"
         )
 
-        # Never crash the bot because of an image.
         return image_data
 
 
@@ -2084,14 +2414,16 @@ async def ping(
 
 @bot.tree.command(
     name="proof",
-    description="Submit a proof screenshot."
+    description="Submit proof screenshots."
 )
 @app_commands.describe(
-    image="Upload your proof screenshot"
+    image="Upload your first proof screenshot",
+    image2="Upload your second proof screenshot (optional)"
 )
 async def proof(
     interaction: discord.Interaction,
-    image: discord.Attachment
+    image: discord.Attachment,
+    image2: discord.Attachment | None = None
 ):
 
     proof_channel_id = config.get(
@@ -2124,43 +2456,55 @@ async def proof(
         )
 
     # =====================================================
-    # IMAGE CHECK
+    # IMAGE VALIDATION
     # =====================================================
 
-    if not image.content_type:
+    images = [
+        image
+    ]
 
-        filename = (
-            image.filename.lower()
+    if image2:
+        images.append(
+            image2
         )
 
-        valid_extensions = (
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".webp"
-        )
+    valid_extensions = (
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp"
+    )
 
-        if not filename.endswith(
-            valid_extensions
+    for uploaded_image in images:
+
+        if not uploaded_image.content_type:
+
+            filename = (
+                uploaded_image.filename.lower()
+            )
+
+            if not filename.endswith(
+                valid_extensions
+            ):
+
+                return await interaction.response.send_message(
+
+                    "❌ Please upload valid image files "
+                    "(.png, .jpg, .jpeg, or .webp).",
+
+                    ephemeral=True
+                )
+
+        elif not uploaded_image.content_type.startswith(
+            "image/"
         ):
 
             return await interaction.response.send_message(
 
-                "❌ Please upload an image!",
+                "❌ Both proof files must be images.",
 
                 ephemeral=True
             )
-
-    elif not image.content_type.startswith(
-        "image/"
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ Please upload an image file!",
-
-            ephemeral=True
-        )
 
     await interaction.response.defer(
         ephemeral=True
@@ -2168,37 +2512,40 @@ async def proof(
 
     try:
 
-        # =================================================
-        # DOWNLOAD IMAGE
-        # =================================================
-
-        image_data = await image.read()
+        files = []
 
         # =================================================
-        # SCAN WHOLE IMAGE + BLUR BOLD TEXT
+        # PROCESS EVERY PROOF IMAGE SEPARATELY
         # =================================================
 
-        blurred_data = blur_proof_text(
-            image_data
-        )
+        for index, uploaded_image in enumerate(
+            images,
+            1
+        ):
+
+            image_data = await uploaded_image.read()
+
+            # Existing username-only blur.
+            blurred_data = blur_proof_text(
+                image_data
+            )
+
+            file = discord.File(
+
+                io.BytesIO(
+                    blurred_data
+                ),
+
+                filename=f"proof_{index}.png"
+            )
+
+            files.append(
+                file
+            )
 
         # =================================================
-        # SEND PROOF
-        #
-        # NO EMBED
-        # NO SUBMITTER
-        # NO DESCRIPTION
-        # NO EXTRA FOOTER
+        # SEND ALL BLURRED PROOFS TO PROOF CHANNEL
         # =================================================
-
-        file = discord.File(
-
-            io.BytesIO(
-                blurred_data
-            ),
-
-            filename="proof.png"
-        )
 
         await proof_channel.send(
 
@@ -2207,17 +2554,15 @@ async def proof(
                 "Thank you so much! ♡"
             ),
 
-            file=file
+            files=files
         )
-
-        # =================================================
-        # USER CONFIRMATION
-        # =================================================
 
         await interaction.followup.send(
 
             "♡ Your proof has been submitted!\n"
-            "Thank you so much! ⭐",
+            f"**{len(files)}** proof image"
+            f"{'s' if len(files) != 1 else ''} "
+            "were processed and blurred successfully! ⭐",
 
             ephemeral=True
         )
@@ -2235,7 +2580,6 @@ async def proof(
 
             ephemeral=True
         )
-
 
 # =========================================================
 # VOUCH
@@ -2712,7 +3056,9 @@ async def clear(
             oldest_first=True
         ):
 
-            messages.append(message)
+            messages.append(
+                message
+            )
 
             if len(messages) >= amount:
                 break
