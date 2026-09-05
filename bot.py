@@ -241,11 +241,6 @@ async def on_member_join(member: discord.Member):
         value=f"• `#{member.guild.member_count}`", 
         inline=True
     )
-    embed.add_field(
-        name="✨˚₊ Account Created", 
-        value=f"• <t:{int(member.created_at.timestamp())}:R>", 
-        inline=False
-    )
     
     # Soft aesthetic anime/pink divider GIF (Replace URL with any banner image link if desired)
     embed.set_image(url="https://media.tenor.com/264pYc0nE40AAAAC/anime-aesthetic.gif")
@@ -534,7 +529,7 @@ async def on_ready():
 
 
 # =========================================================
-# SLASH COMMANDS
+# SLASH COMMANDS - SETUP
 # =========================================================
 
 @bot.tree.command(
@@ -670,6 +665,10 @@ async def setupjoins(
     )
 
 
+# =========================================================
+# SLASH COMMANDS - UTILITY
+# =========================================================
+
 @bot.tree.command(
     name="ticketpanel",
     description="Send a ticket panel to a selected channel."
@@ -709,6 +708,27 @@ async def ticketpanel(
         ephemeral=True
     )
 
+
+@bot.tree.command(
+    name="ping",
+    description="Check the bot's latency and connection status."
+)
+async def ping(interaction: discord.Interaction):
+    latency = round(bot.latency * 1000)
+
+    embed = discord.Embed(
+        title="୨୧・𝘱𝘰𝘯𝘨! ♡",
+        description=f"🌸 Bot Latency: **{latency}ms**\n✨ Status: **Online & Operational**",
+        color=PINK
+    )
+    embed.set_footer(text="ali's adm house • Bot Status ♡")
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# =========================================================
+# SLASH COMMANDS - VOUCH
+# =========================================================
 
 @bot.tree.command(
     name="vouch",
@@ -799,22 +819,9 @@ async def vouchcount(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(
-    name="ping",
-    description="Check the bot's latency and connection status."
-)
-async def ping(interaction: discord.Interaction):
-    latency = round(bot.latency * 1000)
-
-    embed = discord.Embed(
-        title="୨୧・𝘱𝘰𝘯𝘨! ♡",
-        description=f"🌸 Bot Latency: **{latency}ms**\n✨ Status: **Online & Operational**",
-        color=PINK
-    )
-    embed.set_footer(text="ali's adm house • Bot Status ♡")
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
+# =========================================================
+# SLASH COMMANDS - SHOP STATUS
+# =========================================================
 
 @bot.tree.command(
     name="status",
@@ -885,6 +892,10 @@ async def status(
     pending_renames[status_channel.id] = channel_name
 
 
+# =========================================================
+# SLASH COMMANDS - ANNOUNCEMENTS
+# =========================================================
+
 @bot.tree.command(
     name="say",
     description="Send a styled message through the bot."
@@ -927,6 +938,337 @@ async def say(
         f"♡ Message sent to {channel.mention}.",
         ephemeral=True
     )
+
+
+# =========================================================
+# SLASH COMMANDS - MODERATION
+# =========================================================
+
+@bot.tree.command(
+    name="warn",
+    description="Warn a user with a reason."
+)
+@app_commands.describe(
+    user="The user to warn",
+    reason="Reason for the warning"
+)
+async def warn(
+    interaction: discord.Interaction,
+    user: discord.User,
+    reason: str
+):
+
+    if not is_staff(interaction):
+        return await interaction.response.send_message(
+            "❌ Only staff members can warn users.",
+            ephemeral=True
+        )
+
+    if user.id == interaction.user.id:
+        return await interaction.response.send_message(
+            "❌ You cannot warn yourself!",
+            ephemeral=True
+        )
+
+    embed = discord.Embed(
+        title="⚠️ You have been warned",
+        description=f"**Reason:** {reason}",
+        color=RED
+    )
+    embed.set_footer(text="ali's adm house • Moderation ♡")
+
+    try:
+        await user.send(embed=embed)
+    except discord.Forbidden:
+        pass
+
+    await interaction.response.send_message(
+        f"⚠️ Warned {user.mention} for: **{reason}**",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="clear",
+    description="Delete a specified number of messages."
+)
+@app_commands.describe(
+    amount="Number of messages to delete (1-100)"
+)
+async def clear(
+    interaction: discord.Interaction,
+    amount: int
+):
+
+    if not is_staff(interaction):
+        return await interaction.response.send_message(
+            "❌ Only staff members can delete messages.",
+            ephemeral=True
+        )
+
+    if amount < 1 or amount > 100:
+        return await interaction.response.send_message(
+            "❌ Please specify a number between 1 and 100.",
+            ephemeral=True
+        )
+
+    await interaction.response.defer(ephemeral=True)
+
+    deleted = await interaction.channel.purge(limit=amount)
+
+    await interaction.followup.send(
+        f"🗑️ Deleted **{len(deleted)}** message(s).",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="giverole",
+    description="Give a role to a user."
+)
+@app_commands.describe(
+    user="The user to give the role to",
+    role="The role to give"
+)
+async def giverole(
+    interaction: discord.Interaction,
+    user: discord.User,
+    role: discord.Role
+):
+
+    if not is_staff(interaction):
+        return await interaction.response.send_message(
+            "❌ Only staff members can give roles.",
+            ephemeral=True
+        )
+
+    member = interaction.guild.get_member(user.id)
+    if not member:
+        return await interaction.response.send_message(
+            "❌ That user is not in this server.",
+            ephemeral=True
+        )
+
+    try:
+        await member.add_roles(role)
+        await interaction.response.send_message(
+            f"✅ Gave {member.mention} the {role.mention} role!",
+            ephemeral=True
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ I don't have permission to give that role.",
+            ephemeral=True
+        )
+
+
+@bot.tree.command(
+    name="mute",
+    description="Mute a user."
+)
+@app_commands.describe(
+    user="The user to mute",
+    reason="Reason for muting"
+)
+async def mute(
+    interaction: discord.Interaction,
+    user: discord.User,
+    reason: str = "No reason provided"
+):
+
+    if not is_staff(interaction):
+        return await interaction.response.send_message(
+            "❌ Only staff members can mute users.",
+            ephemeral=True
+        )
+
+    member = interaction.guild.get_member(user.id)
+    if not member:
+        return await interaction.response.send_message(
+            "❌ That user is not in this server.",
+            ephemeral=True
+        )
+
+    if user.id == interaction.user.id:
+        return await interaction.response.send_message(
+            "❌ You cannot mute yourself!",
+            ephemeral=True
+        )
+
+    try:
+        await member.timeout(discord.utils.utcnow() + discord.utils.datetime.timedelta(minutes=10), reason=reason)
+        await interaction.response.send_message(
+            f"🔇 Muted {member.mention} for: **{reason}**",
+            ephemeral=True
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ I don't have permission to mute that user.",
+            ephemeral=True
+        )
+
+
+@bot.tree.command(
+    name="ban",
+    description="Ban a user from the server."
+)
+@app_commands.describe(
+    user="The user to ban",
+    reason="Reason for banning"
+)
+async def ban(
+    interaction: discord.Interaction,
+    user: discord.User,
+    reason: str = "No reason provided"
+):
+
+    if not is_staff(interaction):
+        return await interaction.response.send_message(
+            "❌ Only staff members can ban users.",
+            ephemeral=True
+        )
+
+    if user.id == interaction.user.id:
+        return await interaction.response.send_message(
+            "❌ You cannot ban yourself!",
+            ephemeral=True
+        )
+
+    try:
+        await interaction.guild.ban(user, reason=reason)
+        await interaction.response.send_message(
+            f"🚫 Banned {user.mention} for: **{reason}**",
+            ephemeral=True
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ I don't have permission to ban that user.",
+            ephemeral=True
+        )
+
+
+@bot.tree.command(
+    name="kick",
+    description="Kick a user from the server."
+)
+@app_commands.describe(
+    user="The user to kick",
+    reason="Reason for kicking"
+)
+async def kick(
+    interaction: discord.Interaction,
+    user: discord.User,
+    reason: str = "No reason provided"
+):
+
+    if not is_staff(interaction):
+        return await interaction.response.send_message(
+            "❌ Only staff members can kick users.",
+            ephemeral=True
+        )
+
+    member = interaction.guild.get_member(user.id)
+    if not member:
+        return await interaction.response.send_message(
+            "❌ That user is not in this server.",
+            ephemeral=True
+        )
+
+    if user.id == interaction.user.id:
+        return await interaction.response.send_message(
+            "❌ You cannot kick yourself!",
+            ephemeral=True
+        )
+
+    try:
+        await member.kick(reason=reason)
+        await interaction.response.send_message(
+            f"👢 Kicked {member.mention} for: **{reason}**",
+            ephemeral=True
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ I don't have permission to kick that user.",
+            ephemeral=True
+        )
+
+
+@bot.tree.command(
+    name="lockchannel",
+    description="Lock a channel to prevent messages."
+)
+@app_commands.describe(
+    channel="The channel to lock (defaults to current channel)",
+    reason="Reason for locking"
+)
+async def lockchannel(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel | None = None,
+    reason: str = "No reason provided"
+):
+
+    if not is_staff(interaction):
+        return await interaction.response.send_message(
+            "❌ Only staff members can lock channels.",
+            ephemeral=True
+        )
+
+    target_channel = channel or interaction.channel
+
+    try:
+        await target_channel.set_permissions(
+            interaction.guild.default_role,
+            send_messages=False,
+            reason=reason
+        )
+        await interaction.response.send_message(
+            f"🔒 Locked {target_channel.mention} for: **{reason}**",
+            ephemeral=True
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ I don't have permission to lock that channel.",
+            ephemeral=True
+        )
+
+
+@bot.tree.command(
+    name="unlockchannel",
+    description="Unlock a channel to allow messages again."
+)
+@app_commands.describe(
+    channel="The channel to unlock (defaults to current channel)",
+    reason="Reason for unlocking"
+)
+async def unlockchannel(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel | None = None,
+    reason: str = "No reason provided"
+):
+
+    if not is_staff(interaction):
+        return await interaction.response.send_message(
+            "❌ Only staff members can unlock channels.",
+            ephemeral=True
+        )
+
+    target_channel = channel or interaction.channel
+
+    try:
+        await target_channel.set_permissions(
+            interaction.guild.default_role,
+            send_messages=True,
+            reason=reason
+        )
+        await interaction.response.send_message(
+            f"🔓 Unlocked {target_channel.mention} for: **{reason}**",
+            ephemeral=True
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ I don't have permission to unlock that channel.",
+            ephemeral=True
+        )
 
 
 # =========================================================
