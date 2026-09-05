@@ -11,6 +11,10 @@ from discord.ext import commands
 from flask import Flask
 from PIL import Image, ImageFilter
 
+import cv2
+import numpy as np
+import pytesseract
+
 
 # =========================================================
 # KEEP ALIVE
@@ -105,6 +109,7 @@ def save_config(data):
             "w",
             encoding="utf-8"
         ) as file:
+
             json.dump(
                 data,
                 file,
@@ -112,6 +117,7 @@ def save_config(data):
             )
 
     except OSError as error:
+
         print(
             f"Could not save config: {error}"
         )
@@ -142,6 +148,7 @@ def load_config():
         for key, value in DEFAULT_CONFIG.items():
 
             if key not in data:
+
                 data[key] = value
                 changed = True
 
@@ -166,7 +173,7 @@ config = load_config()
 
 
 # =========================================================
-# BOT
+# DISCORD INTENTS
 # =========================================================
 
 intents = discord.Intents.default()
@@ -174,6 +181,7 @@ intents = discord.Intents.default()
 intents.guilds = True
 intents.members = True
 intents.message_content = True
+
 
 bot = commands.Bot(
     command_prefix="!",
@@ -234,33 +242,48 @@ def styled_embed(
 
 
 # =========================================================
-# PROOF BLUR
+# ADVANCED PROOF TEXT BLUR
 # =========================================================
 
 def blur_region(
-    img,
+    image,
     x1,
     y1,
     x2,
     y2,
-    radius=10
+    radius=7
 ):
     """
-    Blur only a specific rectangle.
-    The surrounding image stays completely clear.
+    Blur one individual region without creating
+    a giant rectangular blur across the screenshot.
     """
 
-    width, height = img.size
+    width, height = image.size
 
-    x1 = max(0, min(width, int(x1)))
-    y1 = max(0, min(height, int(y1)))
-    x2 = max(0, min(width, int(x2)))
-    y2 = max(0, min(height, int(y2)))
+    x1 = max(
+        0,
+        min(width, int(x1))
+    )
+
+    y1 = max(
+        0,
+        min(height, int(y1))
+    )
+
+    x2 = max(
+        0,
+        min(width, int(x2))
+    )
+
+    y2 = max(
+        0,
+        min(height, int(y2))
+    )
 
     if x2 <= x1 or y2 <= y1:
         return
 
-    crop = img.crop(
+    crop = image.crop(
         (
             x1,
             y1,
@@ -275,7 +298,7 @@ def blur_region(
         )
     )
 
-    img.paste(
+    image.paste(
         crop,
         (
             x1,
@@ -284,97 +307,539 @@ def blur_region(
     )
 
 
+def is_date_or_time(text):
+    """
+    Prevent dates/times from being blurred.
+    """
+
+    text_lower = text.lower().strip()
+
+    if not text_lower:
+        return True
+
+    # Common date/time characters
+    if ":" in text_lower:
+        return True
+
+    if "/" in text_lower:
+        return True
+
+    # Month names
+    months = [
+        "jan",
+        "january",
+        "feb",
+        "february",
+        "mar",
+        "march",
+        "apr",
+        "april",
+        "may",
+        "jun",
+        "june",
+        "jul",
+        "july",
+        "aug",
+        "august",
+        "sep",
+        "sept",
+        "september",
+        "oct",
+        "october",
+        "nov",
+        "november",
+        "dec",
+        "december"
+    ]
+
+    for month in months:
+
+        if month in text_lower:
+            return True
+
+    # Pure numbers are usually dates
+    if text_lower.replace(
+        ",",
+        ""
+    ).replace(
+        ".",
+        ""
+    ).isdigit():
+
+        return True
+
+    return False
+
+
+def is_button_text(text):
+    """
+    Don't blur the large View / Report buttons.
+    """
+
+    text_lower = text.lower().strip()
+
+    ignored = {
+        "view",
+        "report",
+        "refresh",
+        "buy",
+        "cancel",
+        "confirm",
+        "close"
+    }
+
+    return text_lower in ignored
+
+
+def calculate_dark_ratio(
+    gray,
+    x1,
+    y1,
+    x2,
+    y2
+):
+    """
+    Calculates how much dark text exists inside
+    an OCR region.
+    """
+
+    h, w = gray.shape
+
+    x1 = max(
+        0,
+        min(w, int(x1))
+    )
+
+    y1 = max(
+        0,
+        min(h, int(y1))
+    )
+
+    x2 = max(
+        0,
+        min(w, int(x2))
+    )
+
+    y2 = max(
+        0,
+        min(h, int(y2))
+    )
+
+    if x2 <= x1 or y2 <= y1:
+        return 0
+
+    roi = gray[
+        y1:y2,
+        x1:x2
+    ]
+
+    if roi.size == 0:
+        return 0
+
+    dark_pixels = np.sum(
+        roi < 145
+    )
+
+    return dark_pixels / roi.size
+
+
 def blur_proof_text(
     image_data: bytes
 ) -> bytes:
 
     """
-    Blurs the bold/name text on each proof card.
+    Scans the ENTIRE screenshot using OCR.
 
-    It intentionally DOES NOT blur:
-    - dates
-    - times
-    - View buttons
-    - Report buttons
-    - item grids
-    - icons
-    - refresh icons
-    - background
+    The system:
+      1. Finds all text.
+      2. Measures each text region.
+      3. Detects dark/thick text.
+      4. Ignores dates/times.
+      5. Ignores View/Report buttons.
+      6. Blurs the detected name/text regions individually.
+
+    There is no large solid blur rectangle.
     """
 
     try:
 
-        img = Image.open(
+        # =================================================
+        # LOAD IMAGE
+        # =================================================
+
+        original = Image.open(
             io.BytesIO(image_data)
         ).convert("RGB")
 
-        width, height = img.size
+        width, height = original.size
 
-        # -------------------------------------------------
-        # The screenshot layout is normally:
-        #
-        # CARD 1
-        # CARD 2
-        # CARD 3
-        #
-        # Each card has the bold username near the
-        # upper-left corner.
-        # -------------------------------------------------
-
-        # Name area width.
-        #
-        # We stop before the date/time area so that
-        # only the bold name is covered.
-        name_right = int(
-            width * 0.28
+        # OpenCV image
+        cv_image = cv2.cvtColor(
+            np.array(original),
+            cv2.COLOR_RGB2BGR
         )
 
-        # -------------------------------------------------
-        # CARD 1
-        # -------------------------------------------------
-
-        blur_region(
-            img,
-            int(width * 0.035),
-            int(height * 0.075),
-            name_right,
-            int(height * 0.145),
-            radius=10
+        gray = cv2.cvtColor(
+            cv_image,
+            cv2.COLOR_BGR2GRAY
         )
 
-        # -------------------------------------------------
-        # CARD 2
-        # -------------------------------------------------
+        # =================================================
+        # UPSCALE FOR OCR
+        # =================================================
 
-        blur_region(
-            img,
-            int(width * 0.035),
-            int(height * 0.455),
-            name_right,
-            int(height * 0.525),
-            radius=10
+        scale = 2
+
+        enlarged = cv2.resize(
+            gray,
+            None,
+            fx=scale,
+            fy=scale,
+            interpolation=cv2.INTER_CUBIC
         )
 
-        # -------------------------------------------------
-        # CARD 3
-        # -------------------------------------------------
+        # =================================================
+        # OCR
+        # =================================================
 
-        blur_region(
-            img,
-            int(width * 0.035),
-            int(height * 0.835),
-            name_right,
-            int(height * 0.905),
-            radius=10
+        try:
+
+            ocr_data = pytesseract.image_to_data(
+                enlarged,
+                config="--oem 3 --psm 11",
+                output_type=pytesseract.Output.DICT
+            )
+
+        except Exception as error:
+
+            print(
+                "Tesseract error:",
+                error
+            )
+
+            return image_data
+
+        # =================================================
+        # OUTPUT IMAGE
+        # =================================================
+
+        result = original.copy()
+
+        # =================================================
+        # COLLECT OCR REGIONS
+        # =================================================
+
+        regions = []
+
+        total_words = len(
+            ocr_data["text"]
         )
 
-        # -------------------------------------------------
+        for i in range(
+            total_words
+        ):
+
+            text = (
+                ocr_data["text"][i]
+                .strip()
+            )
+
+            if not text:
+                continue
+
+            try:
+
+                confidence = float(
+                    ocr_data["conf"][i]
+                )
+
+            except (
+                ValueError,
+                TypeError
+            ):
+
+                confidence = 0
+
+            if confidence < 20:
+                continue
+
+            # OCR coordinates are on enlarged image
+            x = int(
+                ocr_data["left"][i]
+                / scale
+            )
+
+            y = int(
+                ocr_data["top"][i]
+                / scale
+            )
+
+            w = int(
+                ocr_data["width"][i]
+                / scale
+            )
+
+            h = int(
+                ocr_data["height"][i]
+                / scale
+            )
+
+            if w < 3 or h < 3:
+                continue
+
+            x1 = max(
+                0,
+                x
+            )
+
+            y1 = max(
+                0,
+                y
+            )
+
+            x2 = min(
+                width,
+                x + w
+            )
+
+            y2 = min(
+                height,
+                y + h
+            )
+
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            regions.append(
+                {
+                    "text": text,
+                    "confidence": confidence,
+                    "x1": x1,
+                    "y1": y1,
+                    "x2": x2,
+                    "y2": y2,
+                    "width": x2 - x1,
+                    "height": y2 - y1
+                }
+            )
+
+        print(
+            f"Proof OCR detected "
+            f"{len(regions)} text regions."
+        )
+
+        # =================================================
+        # PROCESS EACH REGION
+        # =================================================
+
+        blur_count = 0
+
+        for region in regions:
+
+            text = region["text"]
+
+            x1 = region["x1"]
+            y1 = region["y1"]
+            x2 = region["x2"]
+            y2 = region["y2"]
+
+            region_width = (
+                region["width"]
+            )
+
+            region_height = (
+                region["height"]
+            )
+
+            # ---------------------------------------------
+            # IGNORE DATE / TIME
+            # ---------------------------------------------
+
+            if is_date_or_time(text):
+                continue
+
+            # ---------------------------------------------
+            # IGNORE BUTTON TEXT
+            # ---------------------------------------------
+
+            if is_button_text(text):
+                continue
+
+            # ---------------------------------------------
+            # IGNORE VERY SMALL TEXT
+            # ---------------------------------------------
+
+            if region_height < 8:
+                continue
+
+            # ---------------------------------------------
+            # DARKNESS ANALYSIS
+            # ---------------------------------------------
+
+            dark_ratio = calculate_dark_ratio(
+                gray,
+                x1,
+                y1,
+                x2,
+                y2
+            )
+
+            # ---------------------------------------------
+            # MORPHOLOGICAL THICKNESS
+            # ---------------------------------------------
+
+            sx1 = max(
+                0,
+                int(x1 * scale)
+            )
+
+            sy1 = max(
+                0,
+                int(y1 * scale)
+            )
+
+            sx2 = min(
+                enlarged.shape[1],
+                int(x2 * scale)
+            )
+
+            sy2 = min(
+                enlarged.shape[0],
+                int(y2 * scale)
+            )
+
+            roi = enlarged[
+                sy1:sy2,
+                sx1:sx2
+            ]
+
+            if roi.size == 0:
+                continue
+
+            binary = cv2.threshold(
+                roi,
+                145,
+                255,
+                cv2.THRESH_BINARY_INV
+            )[1]
+
+            kernel = np.ones(
+                (3, 3),
+                np.uint8
+            )
+
+            thick = cv2.morphologyEx(
+                binary,
+                cv2.MORPH_CLOSE,
+                kernel
+            )
+
+            thick_ratio = (
+                cv2.countNonZero(thick)
+                / thick.size
+            )
+
+            # ---------------------------------------------
+            # ESTIMATE WHETHER IT IS BOLD
+            # ---------------------------------------------
+
+            likely_bold = False
+
+            # Strong dark text
+            if (
+                dark_ratio >= 0.16
+                and thick_ratio >= 0.18
+            ):
+
+                likely_bold = True
+
+            # Smaller but very dark text
+            elif (
+                dark_ratio >= 0.22
+                and region_height >= 10
+            ):
+
+                likely_bold = True
+
+            # Large dark text
+            elif (
+                region_height >= 20
+                and dark_ratio >= 0.12
+            ):
+
+                likely_bold = True
+
+            if not likely_bold:
+                continue
+
+            # =================================================
+            # ADD PADDING AROUND THE TEXT
+            # =================================================
+
+            pad_x = max(
+                3,
+                int(region_width * 0.08)
+            )
+
+            pad_y = max(
+                3,
+                int(region_height * 0.25)
+            )
+
+            bx1 = max(
+                0,
+                x1 - pad_x
+            )
+
+            by1 = max(
+                0,
+                y1 - pad_y
+            )
+
+            bx2 = min(
+                width,
+                x2 + pad_x
+            )
+
+            by2 = min(
+                height,
+                y2 + pad_y
+            )
+
+            # =================================================
+            # BLUR INDIVIDUAL TEXT
+            # =================================================
+
+            blur_region(
+                result,
+                bx1,
+                by1,
+                bx2,
+                by2,
+                radius=7
+            )
+
+            blur_count += 1
+
+            print(
+                f"Blurred text: "
+                f"{text!r} "
+                f"dark={dark_ratio:.2f} "
+                f"thick={thick_ratio:.2f}"
+            )
+
+        print(
+            f"Proof blur complete: "
+            f"{blur_count} regions blurred."
+        )
+
+        # =================================================
         # SAVE
-        # -------------------------------------------------
+        # =================================================
 
         output = io.BytesIO()
 
-        img.save(
+        result.save(
             output,
             format="PNG"
         )
@@ -386,9 +851,10 @@ def blur_proof_text(
     except Exception as error:
 
         print(
-            f"Proof blur error: {error}"
+            f"Proof processing error: {error}"
         )
 
+        # Never crash the bot because of an image
         return image_data
 
 
@@ -723,8 +1189,10 @@ class TicketView(
         ):
 
             return await interaction.response.send_message(
+
                 "❌ The ticket category "
                 "hasn't been configured yet.",
+
                 ephemeral=True
             )
 
@@ -736,9 +1204,11 @@ class TicketView(
             ):
 
                 return await interaction.response.send_message(
+
                     f"❌ You already have an "
                     f"open ticket: "
                     f"{channel.mention}",
+
                     ephemeral=True
                 )
 
@@ -776,6 +1246,7 @@ class TicketView(
             overwrites[
                 staff_role
             ] = discord.PermissionOverwrite(
+
                 view_channel=True,
                 send_messages=True,
                 read_message_history=True,
@@ -799,9 +1270,13 @@ class TicketView(
 
             ticket_channel = (
                 await guild.create_text_channel(
+
                     name=ticket_name,
+
                     category=category,
+
                     overwrites=overwrites,
+
                     topic=(
                         f"ali_adm_ticket:"
                         f"{interaction.user.id}"
@@ -812,8 +1287,10 @@ class TicketView(
         except discord.Forbidden:
 
             return await interaction.response.send_message(
+
                 "❌ I don't have permission "
                 "to create ticket channels.",
+
                 ephemeral=True
             )
 
@@ -855,8 +1332,10 @@ class TicketView(
         )
 
         await interaction.response.send_message(
+
             f"🎫 Your ticket has been created: "
             f"{ticket_channel.mention}",
+
             ephemeral=True
         )
 
@@ -890,6 +1369,7 @@ class CloseTicketView(
         if is_staff(interaction):
 
             await interaction.response.send_message(
+
                 "🔒 Closing ticket in "
                 "**3 seconds**..."
             )
@@ -930,8 +1410,10 @@ class CloseTicketView(
         ):
 
             return await interaction.response.send_message(
+
                 "❌ The vouch channel has "
                 "not been configured yet.",
+
                 ephemeral=True
             )
 
@@ -965,7 +1447,9 @@ class CloseTicketView(
                     break
 
         bot_commands_channel = discord.utils.get(
+
             guild.text_channels,
+
             name="₊˚⊹♡-𝓫𝓸𝓽-𝓬𝓸𝓶𝓶𝓪𝓷𝓭𝓼"
         )
 
@@ -1107,7 +1591,9 @@ async def setup(
     if not interaction.user.guild_permissions.administrator:
 
         return await interaction.response.send_message(
+
             "❌ You need **Administrator** permission.",
+
             ephemeral=True
         )
 
@@ -1185,7 +1671,9 @@ async def setupstatus(
     if not interaction.user.guild_permissions.administrator:
 
         return await interaction.response.send_message(
+
             "❌ You need **Administrator** permission.",
+
             ephemeral=True
         )
 
@@ -1224,7 +1712,9 @@ async def setupjoins(
     if not interaction.user.guild_permissions.administrator:
 
         return await interaction.response.send_message(
+
             "❌ You need **Administrator** permission.",
+
             ephemeral=True
         )
 
@@ -1267,7 +1757,9 @@ async def setupproof(
     if not interaction.user.guild_permissions.administrator:
 
         return await interaction.response.send_message(
+
             "❌ You need **Administrator** permission.",
+
             ephemeral=True
         )
 
@@ -1279,12 +1771,8 @@ async def setupproof(
 
     await interaction.response.send_message(
 
-        "╭───────────────୨୧\n"
-        "│ **Proof Setup Complete! ♡**\n"
-        "╰───────────────୨୧\n\n"
-
-        f"📸 Proof Channel: "
-        f"{proof_channel.mention}",
+        "♡ Proof channel configured successfully!\n\n"
+        f"📸 Proof Channel: {proof_channel.mention}",
 
         ephemeral=True
     )
@@ -1306,7 +1794,9 @@ async def ticketpanel(
     if not is_staff(interaction):
 
         return await interaction.response.send_message(
+
             "❌ You need staff permissions.",
+
             ephemeral=True
         )
 
@@ -1331,8 +1821,10 @@ async def ticketpanel(
     )
 
     await interaction.response.send_message(
+
         f"♡ Ticket panel sent to "
         f"{channel.mention}.",
+
         ephemeral=True
     )
 
@@ -1407,20 +1899,35 @@ async def proof(
             ephemeral=True
         )
 
-    # -------------------------------------------------
+    # =====================================================
     # IMAGE CHECK
-    # -------------------------------------------------
+    # =====================================================
 
     if not image.content_type:
 
-        return await interaction.response.send_message(
-
-            "❌ Please upload an image!",
-
-            ephemeral=True
+        filename = (
+            image.filename.lower()
         )
 
-    if not image.content_type.startswith(
+        valid_extensions = (
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp"
+        )
+
+        if not filename.endswith(
+            valid_extensions
+        ):
+
+            return await interaction.response.send_message(
+
+                "❌ Please upload an image!",
+
+                ephemeral=True
+            )
+
+    elif not image.content_type.startswith(
         "image/"
     ):
 
@@ -1437,29 +1944,28 @@ async def proof(
 
     try:
 
-        # -------------------------------------------------
-        # DOWNLOAD
-        # -------------------------------------------------
+        # =================================================
+        # DOWNLOAD IMAGE
+        # =================================================
 
         image_data = await image.read()
 
-        # -------------------------------------------------
-        # BLUR ONLY THE BOLD NAME TEXT
-        # -------------------------------------------------
+        # =================================================
+        # SCAN WHOLE IMAGE + BLUR BOLD TEXT
+        # =================================================
 
         blurred_data = blur_proof_text(
             image_data
         )
 
-        # -------------------------------------------------
-        # SEND IMAGE
+        # =================================================
+        # SEND PROOF
         #
         # NO EMBED
         # NO SUBMITTER
         # NO DESCRIPTION
-        # NO "NAMES WERE AUTOMATICALLY BLURRED"
-        # NO "ALI'S ADM HOUSE • PROOF SUBMISSIONS"
-        # -------------------------------------------------
+        # NO EXTRA FOOTER
+        # =================================================
 
         file = discord.File(
 
@@ -1480,13 +1986,13 @@ async def proof(
             file=file
         )
 
-        # -------------------------------------------------
-        # CONFIRMATION
-        # -------------------------------------------------
+        # =================================================
+        # USER CONFIRMATION
+        # =================================================
 
         await interaction.followup.send(
 
-            "♡ Your proof has been submitted! "
+            "♡ Your proof has been submitted!\n"
             "Thank you so much! ⭐",
 
             ephemeral=True
@@ -1641,6 +2147,7 @@ async def vouchcount(
     ):
 
         if message.author == bot.user:
+
             count += 1
 
     await interaction.followup.send(
@@ -1686,7 +2193,9 @@ async def status(
     if not is_staff(interaction):
 
         return await interaction.response.send_message(
+
             "❌ Only staff can update the status.",
+
             ephemeral=True
         )
 
@@ -1708,13 +2217,17 @@ async def status(
     ):
 
         return await interaction.response.send_message(
+
             "❌ Status channel isn't configured.",
+
             ephemeral=True
         )
 
     if state.value == "available":
 
-        title = "🟢・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘢𝘷𝘢𝘪𝘭𝘢𝘣𝘭𝘦"
+        title = (
+            "🟢・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘢𝘷𝘢𝘪𝘭𝘢𝘣𝘭𝘦"
+        )
 
         description = (
             "Our shop is currently **OPEN** "
@@ -1727,7 +2240,9 @@ async def status(
 
     elif state.value == "busy":
 
-        title = "🔴・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘣𝘶𝘴𝘺"
+        title = (
+            "🔴・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘣𝘶𝘴𝘺"
+        )
 
         description = (
             "Our shop is currently **BUSY**! ♡\n"
@@ -1740,7 +2255,9 @@ async def status(
 
     else:
 
-        title = "⚪・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘤𝘭𝘰𝘴𝘦𝘥"
+        title = (
+            "⚪・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘤𝘭𝘰𝘴𝘦𝘥"
+        )
 
         description = (
             "Our shop is currently **CLOSED**! ♡"
@@ -1751,8 +2268,11 @@ async def status(
         channel_name = "⚪-closed"
 
     embed = discord.Embed(
+
         title=title,
+
         description=description,
+
         color=color
     )
 
@@ -1791,7 +2311,9 @@ async def say(
     if not is_staff(interaction):
 
         return await interaction.response.send_message(
+
             "❌ Only staff can use `/say`.",
+
             ephemeral=True
         )
 
@@ -1849,14 +2371,18 @@ async def warn(
     if not is_staff(interaction):
 
         return await interaction.response.send_message(
+
             "❌ Only staff can warn users.",
+
             ephemeral=True
         )
 
     if user.id == interaction.user.id:
 
         return await interaction.response.send_message(
+
             "❌ You cannot warn yourself.",
+
             ephemeral=True
         )
 
@@ -1866,8 +2392,10 @@ async def warn(
     ):
 
         return await interaction.response.send_message(
+
             "❌ You cannot warn someone with "
             "an equal or higher role.",
+
             ephemeral=True
         )
 
@@ -1888,6 +2416,7 @@ async def warn(
         )
 
     except discord.Forbidden:
+
         pass
 
     await interaction.response.send_message(
@@ -1915,14 +2444,18 @@ async def clear(
     if not is_staff(interaction):
 
         return await interaction.response.send_message(
+
             "❌ Only staff can clear messages.",
+
             ephemeral=True
         )
 
     if amount < 1 or amount > 100:
 
         return await interaction.response.send_message(
+
             "❌ Amount must be between 1 and 100.",
+
             ephemeral=True
         )
 
@@ -1932,7 +2465,9 @@ async def clear(
     ):
 
         return await interaction.response.send_message(
+
             "❌ This isn't a text channel.",
+
             ephemeral=True
         )
 
@@ -1981,14 +2516,18 @@ async def giverole(
     if not is_staff(interaction):
 
         return await interaction.response.send_message(
+
             "❌ Only staff can give roles.",
+
             ephemeral=True
         )
 
     if role.is_default():
 
         return await interaction.response.send_message(
+
             "❌ You cannot give @everyone.",
+
             ephemeral=True
         )
 
@@ -1998,8 +2537,10 @@ async def giverole(
     ):
 
         return await interaction.response.send_message(
+
             "❌ I cannot give that role because "
             "it is too high.",
+
             ephemeral=True
         )
 
@@ -2047,14 +2588,18 @@ async def mute(
     if not is_staff(interaction):
 
         return await interaction.response.send_message(
+
             "❌ Only staff can mute users.",
+
             ephemeral=True
         )
 
     if user.id == interaction.user.id:
 
         return await interaction.response.send_message(
+
             "❌ You cannot mute yourself.",
+
             ephemeral=True
         )
 
@@ -2064,8 +2609,10 @@ async def mute(
     ):
 
         return await interaction.response.send_message(
+
             "❌ You cannot mute someone with "
             "an equal or higher role.",
+
             ephemeral=True
         )
 
@@ -2075,7 +2622,9 @@ async def mute(
     ):
 
         return await interaction.response.send_message(
+
             "❌ I cannot mute that user.",
+
             ephemeral=True
         )
 
@@ -2126,14 +2675,18 @@ async def ban(
     if not is_staff(interaction):
 
         return await interaction.response.send_message(
+
             "❌ Only staff can ban users.",
+
             ephemeral=True
         )
 
     if user.id == interaction.user.id:
 
         return await interaction.response.send_message(
+
             "❌ You cannot ban yourself.",
+
             ephemeral=True
         )
 
@@ -2143,8 +2696,10 @@ async def ban(
     ):
 
         return await interaction.response.send_message(
+
             "❌ You cannot ban someone with "
             "an equal or higher role.",
+
             ephemeral=True
         )
 
@@ -2154,7 +2709,9 @@ async def ban(
     ):
 
         return await interaction.response.send_message(
+
             "❌ I cannot ban that user.",
+
             ephemeral=True
         )
 
@@ -2201,14 +2758,18 @@ async def kick(
     if not is_staff(interaction):
 
         return await interaction.response.send_message(
+
             "❌ Only staff can kick users.",
+
             ephemeral=True
         )
 
     if user.id == interaction.user.id:
 
         return await interaction.response.send_message(
+
             "❌ You cannot kick yourself.",
+
             ephemeral=True
         )
 
@@ -2218,8 +2779,10 @@ async def kick(
     ):
 
         return await interaction.response.send_message(
+
             "❌ You cannot kick someone with "
             "an equal or higher role.",
+
             ephemeral=True
         )
 
@@ -2229,7 +2792,9 @@ async def kick(
     ):
 
         return await interaction.response.send_message(
+
             "❌ I cannot kick that user.",
+
             ephemeral=True
         )
 
@@ -2275,7 +2840,9 @@ async def lockchannel(
     if not is_staff(interaction):
 
         return await interaction.response.send_message(
+
             "❌ Only staff can lock channels.",
+
             ephemeral=True
         )
 
@@ -2290,7 +2857,9 @@ async def lockchannel(
     ):
 
         return await interaction.response.send_message(
+
             "❌ Invalid text channel.",
+
             ephemeral=True
         )
 
@@ -2341,7 +2910,9 @@ async def unlockchannel(
     if not is_staff(interaction):
 
         return await interaction.response.send_message(
+
             "❌ Only staff can unlock channels.",
+
             ephemeral=True
         )
 
@@ -2356,7 +2927,9 @@ async def unlockchannel(
     ):
 
         return await interaction.response.send_message(
+
             "❌ Invalid text channel.",
+
             ephemeral=True
         )
 
@@ -2407,8 +2980,7 @@ async def vouch_prefix(
 
         return await ctx.send(
 
-            "❌ Please include a vouch message!\n"
-
+            "❌ Please include a vouch message!\n\n"
             "Example:\n"
             "`!vouch Great service! ♡`",
 
@@ -2490,7 +3062,7 @@ async def vouch_prefix(
 
 
 # =========================================================
-# ERRORS
+# COMMAND ERRORS
 # =========================================================
 
 @bot.event
@@ -2503,6 +3075,7 @@ async def on_command_error(
         error,
         commands.CommandNotFound
     ):
+
         return
 
     print(
@@ -2551,7 +3124,7 @@ async def on_app_command_error(
 
 
 # =========================================================
-# START
+# START BOT
 # =========================================================
 
 TOKEN = os.getenv(
