@@ -61,10 +61,9 @@ DEFAULT_CONFIG = {
     "customer_role_id": int(
         os.getenv("CUSTOMER_ROLE_ID", 1545438540362555463)
     ) or 1545438540362555463,
-    "blur_everything": os.getenv(
-        "BLUR_EVERYTHING",
-        "true"
-    ).lower() == "true"
+    "blur_everything": bool(
+        os.getenv("BLUR_EVERYTHING", "true").lower() == "true"
+    )
 }
 
 
@@ -167,24 +166,21 @@ def is_staff(interaction: discord.Interaction):
 
 
 # =========================================================
-# HYBRID PROOF TEXT DETECTOR
+# BLACK HIGHLIGHTED TEXT BLUR
 # =========================================================
 #
-# This does NOT rely only on OCR.
+# This version specifically targets:
 #
-# It combines:
+#     BLACK / VERY DARK TEXT
+#     ON LIGHT/WHITE BACKGROUNDS
 #
-# 1. Normal OCR
-# 2. Inverted OCR
-# 3. Adaptive threshold OCR
-# 4. Character-level OCR
-# 5. Dark pixel detection
-# 6. Connected component detection
-# 7. Morphological text grouping
-# 8. Large safety padding
+# It does NOT intentionally blur every dark object.
 #
-# This is specifically designed to catch bold/dark text such
-# as usernames even if Tesseract fails to recognize them.
+# The screenshot example:
+#
+#     mc444z
+#
+# is exactly the type of text this detector is designed for.
 # =========================================================
 
 def blur_proof_text(
@@ -194,7 +190,7 @@ def blur_proof_text(
 
     try:
 
-        print("[PROOF] Starting hybrid proof scan...")
+        print("[PROOF] Starting black-text scan...")
 
         original = Image.open(
             io.BytesIO(image_data)
@@ -207,18 +203,14 @@ def blur_proof_text(
 
         rgb = np.array(original)
 
-        # =================================================
-        # OPENCV BASE
-        # =================================================
-
         gray = cv2.cvtColor(
             rgb,
             cv2.COLOR_RGB2GRAY
         )
 
-        # =================================================
-        # 3X UPSCALE
-        # =================================================
+        # -------------------------------------------------
+        # UPSCALE
+        # -------------------------------------------------
 
         scale = 3
 
@@ -230,77 +222,29 @@ def blur_proof_text(
             interpolation=cv2.INTER_CUBIC
         )
 
-        # =================================================
-        # CONTRAST ENHANCEMENT
-        # =================================================
+        # -------------------------------------------------
+        # OCR PASSES
+        # -------------------------------------------------
 
-        clahe = cv2.createCLAHE(
-            clipLimit=2.0,
-            tileGridSize=(8, 8)
-        )
-
-        enhanced = clahe.apply(
-            enlarged
-        )
-
-        # =================================================
-        # THRESHOLDS
-        # =================================================
-
-        otsu = cv2.threshold(
-            enhanced,
-            0,
-            255,
-            cv2.THRESH_BINARY + cv2.THRESH_OTSU
-        )[1]
-
-        inverted_otsu = cv2.bitwise_not(
-            otsu
-        )
-
-        adaptive = cv2.adaptiveThreshold(
-            enhanced,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY,
-            31,
-            11
-        )
-
-        inverted_adaptive = cv2.bitwise_not(
-            adaptive
-        )
-
-        # =================================================
-        # SHARPEN
-        # =================================================
-
-        sharpen_kernel = np.array([
-            [0, -1, 0],
-            [-1, 5, -1],
-            [0, -1, 0]
-        ])
-
-        sharpened = cv2.filter2D(
-            enhanced,
-            -1,
-            sharpen_kernel
-        )
+        ocr_regions = []
 
         ocr_images = [
-            enhanced,
-            sharpened,
-            otsu,
-            inverted_otsu,
-            adaptive,
-            inverted_adaptive
+            enlarged,
+            cv2.threshold(
+                enlarged,
+                0,
+                255,
+                cv2.THRESH_BINARY + cv2.THRESH_OTSU
+            )[1],
+            cv2.adaptiveThreshold(
+                enlarged,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY,
+                31,
+                11
+            )
         ]
-
-        # =================================================
-        # OCR DETECTION
-        # =================================================
-
-        raw_regions = []
 
         ocr_configs = [
             "--oem 3 --psm 6",
@@ -328,35 +272,12 @@ def blur_proof_text(
 
                     continue
 
-                texts = data.get(
-                    "text",
-                    []
-                )
-
-                lefts = data.get(
-                    "left",
-                    []
-                )
-
-                tops = data.get(
-                    "top",
-                    []
-                )
-
-                widths = data.get(
-                    "width",
-                    []
-                )
-
-                heights = data.get(
-                    "height",
-                    []
-                )
-
-                confs = data.get(
-                    "conf",
-                    []
-                )
+                texts = data.get("text", [])
+                lefts = data.get("left", [])
+                tops = data.get("top", [])
+                widths = data.get("width", [])
+                heights = data.get("height", [])
+                confs = data.get("conf", [])
 
                 for i in range(len(texts)):
 
@@ -374,7 +295,7 @@ def blur_proof_text(
                     except Exception:
                         confidence = 0
 
-                    if confidence < 0:
+                    if confidence < 5:
                         continue
 
                     try:
@@ -398,328 +319,86 @@ def blur_proof_text(
                     except Exception:
                         continue
 
-                    if w < 2 or h < 2:
+                    if w < 4 or h < 3:
                         continue
 
-                    if w > width * 0.90:
+                    if w > width * 0.60:
                         continue
 
-                    if h > height * 0.25:
+                    if h > height * 0.12:
                         continue
 
-                    x1 = max(
-                        0,
-                        x
+                    ocr_regions.append(
+                        (
+                            x,
+                            y,
+                            x + w,
+                            y + h,
+                            text
+                        )
                     )
-
-                    y1 = max(
-                        0,
-                        y
-                    )
-
-                    x2 = min(
-                        width,
-                        x + w
-                    )
-
-                    y2 = min(
-                        height,
-                        y + h
-                    )
-
-                    if x2 <= x1 or y2 <= y1:
-                        continue
-
-                    raw_regions.append({
-                        "x1": x1,
-                        "y1": y1,
-                        "x2": x2,
-                        "y2": y2,
-                        "confidence": confidence,
-                        "source": "ocr",
-                        "text": text
-                    })
 
         print(
-            f"[PROOF] OCR regions: "
-            f"{len(raw_regions)}"
+            f"[PROOF] OCR candidates: {len(ocr_regions)}"
         )
 
-        # =================================================
-        # CHARACTER LEVEL OCR
-        # =================================================
+        # -------------------------------------------------
+        # BLACK TEXT PIXEL MASK
+        # -------------------------------------------------
+        #
+        # The key part:
+        #
+        # Only very dark pixels are selected.
+        #
+        # This avoids most gray UI elements.
+        # -------------------------------------------------
 
-        character_regions = []
-
-        for processed in ocr_images:
-
-            try:
-
-                boxes = pytesseract.image_to_boxes(
-                    processed,
-                    config="--oem 3 --psm 11"
-                )
-
-            except Exception:
-                continue
-
-            if not boxes:
-                continue
-
-            for line in boxes.splitlines():
-
-                parts = line.split()
-
-                if len(parts) < 5:
-                    continue
-
-                try:
-
-                    char = parts[0]
-
-                    if not char.strip():
-                        continue
-
-                    bx1 = int(parts[1])
-                    by1 = int(parts[2])
-                    bx2 = int(parts[3])
-                    by2 = int(parts[4])
-
-                    image_ocr_height = (
-                        processed.shape[0]
-                    )
-
-                    x1 = int(
-                        bx1 / scale
-                    )
-
-                    x2 = int(
-                        bx2 / scale
-                    )
-
-                    y1 = int(
-                        (image_ocr_height - by2)
-                        / scale
-                    )
-
-                    y2 = int(
-                        (image_ocr_height - by1)
-                        / scale
-                    )
-
-                    if x2 <= x1 or y2 <= y1:
-                        continue
-
-                    if (x2 - x1) < 2:
-                        continue
-
-                    if (y2 - y1) < 2:
-                        continue
-
-                    character_regions.append({
-                        "x1": max(0, x1),
-                        "y1": max(0, y1),
-                        "x2": min(width, x2),
-                        "y2": min(height, y2),
-                        "confidence": 5,
-                        "source": "characters",
-                        "text": char
-                    })
-
-                except Exception:
-                    continue
-
-        print(
-            f"[PROOF] Character regions: "
-            f"{len(character_regions)}"
+        black_mask = cv2.inRange(
+            gray,
+            0,
+            85
         )
 
-        # =================================================
-        # VISUAL DARK-TEXT DETECTOR
-        # =================================================
-        #
-        # This is the important new part.
-        #
-        # It does not care whether OCR understands the
-        # text. It looks for groups of dark pixels that
-        # visually resemble text.
-        # =================================================
+        # -------------------------------------------------
+        # REMOVE TINY NOISE
+        # -------------------------------------------------
 
-        visual_regions = []
-
-        # Use several darkness thresholds.
-        darkness_thresholds = [
-            80,
-            105,
-            130,
-            155
-        ]
-
-        for threshold in darkness_thresholds:
-
-            # Dark pixels become white.
-            dark_mask = cv2.inRange(
-                gray,
-                0,
-                threshold
-            )
-
-            # Remove tiny noise.
-            small_kernel = cv2.getStructuringElement(
+        black_mask = cv2.morphologyEx(
+            black_mask,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(
                 cv2.MORPH_RECT,
                 (2, 2)
             )
-
-            dark_mask = cv2.morphologyEx(
-                dark_mask,
-                cv2.MORPH_OPEN,
-                small_kernel,
-                iterations=1
-            )
-
-            # -------------------------------------------------
-            # Connect letters horizontally.
-            #
-            # Example:
-            #
-            # m c 4 4 4 z
-            #
-            # becomes one larger region.
-            # -------------------------------------------------
-
-            horizontal_kernel = cv2.getStructuringElement(
-                cv2.MORPH_RECT,
-                (13, 3)
-            )
-
-            grouped = cv2.morphologyEx(
-                dark_mask,
-                cv2.MORPH_CLOSE,
-                horizontal_kernel,
-                iterations=1
-            )
-
-            grouped = cv2.dilate(
-                grouped,
-                horizontal_kernel,
-                iterations=1
-            )
-
-            # -------------------------------------------------
-            # Find connected components.
-            # -------------------------------------------------
-
-            contours, _ = cv2.findContours(
-                grouped,
-                cv2.RETR_EXTERNAL,
-                cv2.CHAIN_APPROX_SIMPLE
-            )
-
-            for contour in contours:
-
-                x, y, w, h = cv2.boundingRect(
-                    contour
-                )
-
-                area = w * h
-
-                # Basic filtering.
-                if w < 5:
-                    continue
-
-                if h < 3:
-                    continue
-
-                if area < 25:
-                    continue
-
-                # Don't consider the entire screenshot
-                # one text region.
-                if w > width * 0.80:
-                    continue
-
-                if h > height * 0.15:
-                    continue
-
-                # Very tall/narrow UI elements are unlikely
-                # to be text.
-                aspect = w / max(h, 1)
-
-                if aspect < 0.35:
-                    continue
-
-                # Convert to a region.
-                visual_regions.append({
-                    "x1": x,
-                    "y1": y,
-                    "x2": x + w,
-                    "y2": y + h,
-                    "confidence": 100,
-                    "source": "visual",
-                    "text": ""
-                })
-
-        print(
-            f"[PROOF] Visual regions: "
-            f"{len(visual_regions)}"
         )
 
-        # =================================================
-        # STRONGER DARK-TEXT PASS
-        # =================================================
-        #
-        # Detect darker text that is surrounded by a light
-        # background. This works particularly well for
-        # usernames on white/gray cards.
-        # =================================================
+        # -------------------------------------------------
+        # CONNECT LETTERS HORIZONTALLY
+        # -------------------------------------------------
 
-        local_dark_mask = np.zeros(
-            (height, width),
-            dtype=np.uint8
-        )
-
-        # Several thresholds are combined.
-        for threshold in [95, 120, 145]:
-
-            local_mask = cv2.inRange(
-                gray,
-                0,
-                threshold
-            )
-
-            local_dark_mask = cv2.bitwise_or(
-                local_dark_mask,
-                local_mask
-            )
-
-        # Connect characters horizontally.
-        line_kernel = cv2.getStructuringElement(
+        text_kernel = cv2.getStructuringElement(
             cv2.MORPH_RECT,
-            (17, 5)
+            (11, 3)
         )
 
-        local_dark_mask = cv2.morphologyEx(
-            local_dark_mask,
+        grouped_text = cv2.morphologyEx(
+            black_mask,
             cv2.MORPH_CLOSE,
-            line_kernel,
+            text_kernel,
             iterations=1
         )
 
-        # Small dilation catches bold edges.
-        local_dark_mask = cv2.dilate(
-            local_dark_mask,
-            cv2.getStructuringElement(
-                cv2.MORPH_RECT,
-                (5, 3)
-            ),
-            iterations=1
-        )
+        # -------------------------------------------------
+        # FIND BLACK REGIONS
+        # -------------------------------------------------
 
         contours, _ = cv2.findContours(
-            local_dark_mask,
+            grouped_text,
             cv2.RETR_EXTERNAL,
             cv2.CHAIN_APPROX_SIMPLE
         )
+
+        visual_regions = []
 
         for contour in contours:
 
@@ -727,259 +406,355 @@ def blur_proof_text(
                 contour
             )
 
-            if w < 5:
-                continue
-
-            if h < 3:
-                continue
-
-            if w > width * 0.75:
-                continue
-
-            if h > height * 0.12:
-                continue
-
             area = w * h
 
-            if area < 20:
+            # Ignore tiny noise.
+            if w < 6:
                 continue
 
-            visual_regions.append({
-                "x1": x,
-                "y1": y,
-                "x2": x + w,
-                "y2": y + h,
-                "confidence": 110,
-                "source": "bold_visual",
-                "text": ""
-            })
+            if h < 4:
+                continue
 
-        # =================================================
-        # COMBINE ALL DETECTIONS
-        # =================================================
+            if area < 30:
+                continue
 
-        all_regions = (
-            raw_regions
-            + character_regions
-            + visual_regions
-        )
+            # Ignore huge areas.
+            if w > width * 0.65:
+                continue
+
+            if h > height * 0.10:
+                continue
+
+            aspect = w / max(h, 1)
+
+            # Text is normally wider than it is tall.
+            if aspect < 0.8:
+                continue
+
+            # -------------------------------------------------
+            # CHECK SURROUNDING BACKGROUND
+            # -------------------------------------------------
+            #
+            # This is important.
+            #
+            # A dark icon on a gray background should not
+            # automatically be considered black text.
+            #
+            # We check whether the area around the candidate
+            # is substantially lighter than the candidate.
+            # -------------------------------------------------
+
+            pad = 6
+
+            sx1 = max(
+                0,
+                x - pad
+            )
+
+            sy1 = max(
+                0,
+                y - pad
+            )
+
+            sx2 = min(
+                width,
+                x + w + pad
+            )
+
+            sy2 = min(
+                height,
+                y + h + pad
+            )
+
+            candidate = gray[
+                y:y + h,
+                x:x + w
+            ]
+
+            surrounding = gray[
+                sy1:sy2,
+                sx1:sx2
+            ]
+
+            if candidate.size == 0:
+                continue
+
+            if surrounding.size == 0:
+                continue
+
+            candidate_mean = float(
+                np.mean(candidate)
+            )
+
+            surrounding_mean = float(
+                np.mean(surrounding)
+            )
+
+            # Black text should normally be dark while
+            # its surrounding card is considerably lighter.
+            if candidate_mean > 115:
+                continue
+
+            if surrounding_mean < 145:
+                continue
+
+            if surrounding_mean - candidate_mean < 35:
+                continue
+
+            visual_regions.append(
+                (
+                    x,
+                    y,
+                    x + w,
+                    y + h
+                )
+            )
 
         print(
-            f"[PROOF] Total raw regions: "
-            f"{len(all_regions)}"
+            f"[PROOF] Black visual candidates: "
+            f"{len(visual_regions)}"
         )
 
-        if not all_regions:
+        # -------------------------------------------------
+        # COMBINE OCR + VISUAL DETECTION
+        # -------------------------------------------------
 
-            print(
-                "[PROOF] Nothing detected."
+        regions = []
+
+        for x1, y1, x2, y2 in visual_regions:
+
+            regions.append(
+                {
+                    "x1": x1,
+                    "y1": y1,
+                    "x2": x2,
+                    "y2": y2,
+                    "source": "black"
+                }
             )
 
-            return image_data
+        # OCR is used only when the OCR box itself contains
+        # enough dark pixels.
+        for x1, y1, x2, y2, text in ocr_regions:
 
-        # =================================================
-        # REGION HELPERS
-        # =================================================
-
-        def region_area(region):
-
-            return max(
-                0,
-                region["x2"] - region["x1"]
-            ) * max(
-                0,
-                region["y2"] - region["y1"]
-            )
-
-        def intersection(a, b):
-
-            x1 = max(
-                a["x1"],
-                b["x1"]
-            )
-
-            y1 = max(
-                a["y1"],
-                b["y1"]
-            )
-
-            x2 = min(
-                a["x2"],
-                b["x2"]
-            )
-
-            y2 = min(
-                a["y2"],
-                b["y2"]
-            )
+            x1 = max(0, x1)
+            y1 = max(0, y1)
+            x2 = min(width, x2)
+            y2 = min(height, y2)
 
             if x2 <= x1 or y2 <= y1:
-                return 0
-
-            return (
-                (x2 - x1)
-                * (y2 - y1)
-            )
-
-        # =================================================
-        # DEDUPLICATE
-        # =================================================
-
-        all_regions.sort(
-            key=lambda region: (
-                region["confidence"],
-                region_area(region)
-            ),
-            reverse=True
-        )
-
-        cleaned_regions = []
-
-        for region in all_regions:
-
-            area = region_area(
-                region
-            )
-
-            if area <= 0:
                 continue
 
-            duplicate = False
+            candidate = gray[
+                y1:y2,
+                x1:x2
+            ]
 
-            for existing in cleaned_regions:
+            if candidate.size == 0:
+                continue
 
-                overlap = intersection(
-                    region,
-                    existing
-                )
+            dark_pixels = np.sum(
+                candidate <= 100
+            )
 
-                if overlap <= 0:
-                    continue
+            total_pixels = candidate.size
 
-                smaller_area = min(
-                    area,
-                    region_area(existing)
-                )
+            dark_ratio = (
+                dark_pixels
+                / max(total_pixels, 1)
+            )
 
-                if smaller_area <= 0:
-                    continue
+            # OCR detections are accepted only if the
+            # detected region actually contains dark text.
+            if dark_ratio < 0.03:
+                continue
 
-                overlap_ratio = (
-                    overlap
-                    / smaller_area
-                )
-
-                if overlap_ratio >= 0.60:
-
-                    duplicate = True
-                    break
-
-            if not duplicate:
-
-                cleaned_regions.append(
-                    region
-                )
+            regions.append(
+                {
+                    "x1": x1,
+                    "y1": y1,
+                    "x2": x2,
+                    "y2": y2,
+                    "source": "ocr"
+                }
+            )
 
         print(
-            f"[PROOF] Cleaned regions: "
-            f"{len(cleaned_regions)}"
+            f"[PROOF] Combined regions: {len(regions)}"
         )
 
-        # =================================================
-        # CREATE MASK
-        # =================================================
+        # -------------------------------------------------
+        # MERGE OVERLAPPING REGIONS
+        # -------------------------------------------------
+
+        changed = True
+
+        while changed:
+
+            changed = False
+            merged = []
+            used = [False] * len(regions)
+
+            for i, a in enumerate(regions):
+
+                if used[i]:
+                    continue
+
+                current = {
+                    "x1": a["x1"],
+                    "y1": a["y1"],
+                    "x2": a["x2"],
+                    "y2": a["y2"]
+                }
+
+                used[i] = True
+
+                for j in range(i + 1, len(regions)):
+
+                    if used[j]:
+                        continue
+
+                    b = regions[j]
+
+                    ax1 = current["x1"]
+                    ay1 = current["y1"]
+                    ax2 = current["x2"]
+                    ay2 = current["y2"]
+
+                    bx1 = b["x1"]
+                    by1 = b["y1"]
+                    bx2 = b["x2"]
+                    by2 = b["y2"]
+
+                    # Gap between boxes.
+                    horizontal_gap = max(
+                        0,
+                        max(bx1 - ax2, ax1 - bx2)
+                    )
+
+                    vertical_gap = max(
+                        0,
+                        max(by1 - ay2, ay1 - by2)
+                    )
+
+                    overlap_x = min(
+                        ax2,
+                        bx2
+                    ) - max(
+                        ax1,
+                        bx1
+                    )
+
+                    overlap_y = min(
+                        ay2,
+                        by2
+                    ) - max(
+                        ay1,
+                        by1
+                    )
+
+                    # Merge if they overlap or are close on
+                    # the same text line.
+                    same_line = (
+                        horizontal_gap <= 14
+                        and vertical_gap <= 8
+                    )
+
+                    overlaps = (
+                        overlap_x > 0
+                        and overlap_y > 0
+                    )
+
+                    if same_line or overlaps:
+
+                        current["x1"] = min(
+                            current["x1"],
+                            bx1
+                        )
+
+                        current["y1"] = min(
+                            current["y1"],
+                            by1
+                        )
+
+                        current["x2"] = max(
+                            current["x2"],
+                            bx2
+                        )
+
+                        current["y2"] = max(
+                            current["y2"],
+                            by2
+                        )
+
+                        used[j] = True
+                        changed = True
+
+                merged.append(
+                    current
+                )
+
+            regions = merged
+
+        # -------------------------------------------------
+        # CREATE FINAL MASK
+        # -------------------------------------------------
 
         mask = np.zeros(
             (height, width),
             dtype=np.uint8
         )
 
-        button_words = {
-            "close",
-            "cancel",
-            "submit",
-            "send",
-            "back",
-            "next",
-            "open",
-            "menu",
-            "shop",
-            "buy",
-            "edit",
-            "save",
-            "done",
-            "copy",
-            "delete"
-        }
-
         accepted = 0
 
-        for region in cleaned_regions:
+        for region in regions:
 
-            x1 = region["x1"]
-            y1 = region["y1"]
-            x2 = region["x2"]
-            y2 = region["y2"]
-
-            confidence = region[
-                "confidence"
-            ]
-
-            text = region.get(
-                "text",
-                ""
-            ).lower().strip()
+            x1 = int(region["x1"])
+            y1 = int(region["y1"])
+            x2 = int(region["x2"])
+            y2 = int(region["y2"])
 
             rw = x2 - x1
             rh = y2 - y1
 
-            if rw < 2 or rh < 2:
+            if rw < 5 or rh < 3:
                 continue
 
             # -------------------------------------------------
-            # SMART MODE
+            # EXTRA CHECK:
+            # REGION MUST ACTUALLY CONTAIN DARK PIXELS.
             # -------------------------------------------------
 
-            if not blur_everything:
+            check = gray[
+                max(0, y1):min(height, y2),
+                max(0, x1):min(width, x2)
+            ]
 
-                if (
-                    text in button_words
-                    and confidence >= 30
-                ):
-                    continue
+            if check.size == 0:
+                continue
 
-                if confidence < 20:
-                    continue
+            dark_ratio = np.mean(
+                check <= 110
+            )
+
+            if dark_ratio < 0.02:
+                continue
 
             # -------------------------------------------------
-            # EXTRA PADDING
+            # PADDING
             # -------------------------------------------------
 
-            if blur_everything:
+            # Enough padding to cover the complete black
+            # username, including bold edges.
+            pad_x = max(
+                5,
+                int(rw * 0.18)
+            )
 
-                # Larger padding specifically designed
-                # for bold usernames.
-                pad_x = max(
-                    8,
-                    int(rw * 0.22)
-                )
-
-                pad_y = max(
-                    8,
-                    int(rh * 0.60)
-                )
-
-            else:
-
-                pad_x = max(
-                    5,
-                    int(rw * 0.15)
-                )
-
-                pad_y = max(
-                    5,
-                    int(rh * 0.35)
-                )
+            pad_y = max(
+                4,
+                int(rh * 0.45)
+            )
 
             bx1 = max(
                 0,
@@ -1012,152 +787,86 @@ def blur_proof_text(
             accepted += 1
 
         print(
-            f"[PROOF] Accepted regions: "
+            f"[PROOF] Final black-text regions: "
             f"{accepted}"
         )
 
-        # =================================================
-        # CONNECT NEARBY TEXT
-        # =================================================
+        # -------------------------------------------------
+        # DON'T MASS-BLUR THE IMAGE
+        # -------------------------------------------------
+        #
+        # Only the detected black text gets blurred.
+        # -------------------------------------------------
 
-        if blur_everything:
+        if accepted == 0:
 
-            # Horizontal connection is strong because
-            # usernames and highlighted text are usually
-            # horizontal.
-            horizontal = cv2.getStructuringElement(
-                cv2.MORPH_RECT,
-                (15, 5)
+            print(
+                "[PROOF] No black highlighted text found."
             )
 
-            mask = cv2.dilate(
-                mask,
-                horizontal,
-                iterations=1
-            )
+            return image_data
 
-            # Expand around bold glyph edges.
-            strong = cv2.getStructuringElement(
-                cv2.MORPH_ELLIPSE,
-                (9, 9)
-            )
-
-            mask = cv2.dilate(
-                mask,
-                strong,
-                iterations=1
-            )
-
-        else:
-
-            normal = cv2.getStructuringElement(
-                cv2.MORPH_RECT,
-                (7, 5)
-            )
-
-            mask = cv2.dilate(
-                mask,
-                normal,
-                iterations=1
-            )
-
-        # =================================================
-        # CLOSE SMALL GAPS
-        # =================================================
-
-        close_kernel = cv2.getStructuringElement(
-            cv2.MORPH_RECT,
-            (9, 5)
-        )
-
-        mask = cv2.morphologyEx(
+        # Slight mask expansion to cover antialiased edges.
+        mask = cv2.dilate(
             mask,
-            cv2.MORPH_CLOSE,
-            close_kernel,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (5, 5)
+            ),
             iterations=1
         )
 
-        # =================================================
-        # FINAL SAFETY EXPANSION
-        # =================================================
-
-        if blur_everything:
-
-            final_kernel = cv2.getStructuringElement(
-                cv2.MORPH_ELLIPSE,
-                (7, 7)
-            )
-
-            mask = cv2.dilate(
-                mask,
-                final_kernel,
-                iterations=1
-            )
-
-        # =================================================
-        # STRONG BLUR
-        # =================================================
-
-        if blur_everything:
-
-            blur_radius = 42
-
-        else:
-
-            blur_radius = 25
+        # -------------------------------------------------
+        # STRONG LOCAL BLUR
+        # -------------------------------------------------
 
         blurred = original.filter(
             ImageFilter.GaussianBlur(
-                radius=blur_radius
+                radius=38
             )
         )
 
-        # =================================================
-        # SOFT MASK EDGES
-        # =================================================
-
+        # Soft edge around the blurred region.
         mask_image = Image.fromarray(
             mask,
             mode="L"
         )
 
-        soft_mask = mask_image.filter(
+        mask_image = mask_image.filter(
             ImageFilter.GaussianBlur(
-                radius=2
+                radius=1.5
             )
         )
 
-        # =================================================
+        # -------------------------------------------------
         # COMPOSITE
-        # =================================================
+        # -------------------------------------------------
 
         result = Image.composite(
             blurred,
             original,
-            soft_mask
+            mask_image
         )
 
-        # =================================================
-        # SECOND BLUR
-        # =================================================
+        # -------------------------------------------------
+        # EXTRA BLUR PASS
+        # -------------------------------------------------
 
-        if blur_everything:
-
-            second_blurred = result.filter(
-                ImageFilter.GaussianBlur(
-                    radius=14
-                )
+        extra_blur = result.filter(
+            ImageFilter.GaussianBlur(
+                radius=12
             )
+        )
 
-            result = Image.composite(
-                second_blurred,
-                result,
-                soft_mask
-            )
+        result = Image.composite(
+            extra_blur,
+            result,
+            mask_image
+        )
 
-        # =================================================
-        # OUTPUT
-        # =================================================
+        # -------------------------------------------------
+        # SAVE
+        # -------------------------------------------------
 
         output = io.BytesIO()
 
@@ -1169,7 +878,7 @@ def blur_proof_text(
         output.seek(0)
 
         print(
-            "[PROOF] Hybrid blur finished successfully."
+            "[PROOF] Black highlighted text blurred successfully."
         )
 
         return output.getvalue()
@@ -1177,11 +886,9 @@ def blur_proof_text(
     except Exception as e:
 
         print(
-            f"[PROOF] Hybrid blur error: {e}"
+            f"[PROOF] Blur error: {e}"
         )
 
-        # If image processing fails, don't break
-        # the Discord command.
         return image_data
 
 
@@ -2398,7 +2105,7 @@ Our shop is currently:
 
 
 # =========================================================
-# SAY / ANNOUNCEMENT
+# SAY
 # =========================================================
 
 @bot.tree.command(
@@ -3119,7 +2826,7 @@ async def on_app_command_error(
 
 
 # =========================================================
-# START BOT
+# START
 # =========================================================
 
 TOKEN = os.getenv(
@@ -3131,7 +2838,6 @@ if not TOKEN:
     raise RuntimeError(
         "DISCORD_TOKEN is not set."
     )
-
 
 keep_alive()
 
