@@ -166,34 +166,29 @@ def is_staff(interaction: discord.Interaction):
 
 
 # =========================================================
-# TEMPLATE-BASED USERNAME BLUR
+# BLACK BOLD TEXT DETECTOR
 # =========================================================
 #
-# Designed for screenshots like:
+# TARGET EXAMPLE:
 #
-# ┌─────────────────────────────────────┐
-# │ Arthurbns29                         │
-# │ Sep 5, 2026              10:30 PM   │
-# │                                     │
-# │ [        View       ] [   Report ]  │
-# └─────────────────────────────────────┘
+#     Arthurbns29
 #
-# The detector:
+# The detector looks for:
 #
-# 1. Finds the large white cards.
-# 2. Looks only near the TOP of each card.
-# 3. Looks for large black horizontal text.
-# 4. Blurs only that text.
+# - Very dark / black pixels
+# - Thick text strokes
+# - Multiple characters close together
+# - Horizontal text lines
+# - Light background surrounding the text
 #
-# It does NOT intentionally target:
+# It intentionally avoids:
 #
-# - View
-# - Report
-# - Date
-# - Time
-# - gray background
-# - item icons
-# - refresh icons
+# - Green View button
+# - Orange Report button
+# - Gray background
+# - Small item icons
+# - Refresh icon
+# - Thin gray date/time text
 #
 # =========================================================
 
@@ -204,20 +199,18 @@ def blur_proof_text(
 
     try:
 
-        print(
-            "[PROOF] Starting template-based username scan..."
-        )
+        print("[PROOF] Starting bold black text detector...")
 
         original = Image.open(
             io.BytesIO(image_data)
         ).convert("RGB")
 
-        rgb = np.array(original)
-
-        height, width = rgb.shape[:2]
+        width, height = original.size
 
         if width <= 0 or height <= 0:
             return image_data
+
+        rgb = np.array(original)
 
         gray = cv2.cvtColor(
             rgb,
@@ -225,42 +218,95 @@ def blur_proof_text(
         )
 
         # =================================================
-        # STEP 1
-        # FIND WHITE/LIGHT CARDS
+        # UPSCALE
         # =================================================
 
-        white_mask = cv2.inRange(
+        scale = 3
+
+        enlarged = cv2.resize(
             gray,
-            220,
-            255
+            None,
+            fx=scale,
+            fy=scale,
+            interpolation=cv2.INTER_CUBIC
         )
 
-        white_mask = cv2.morphologyEx(
-            white_mask,
-            cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(
-                cv2.MORPH_RECT,
-                (15, 15)
-            ),
-            iterations=2
+        # =================================================
+        # VERY DARK / BLACK MASK
+        # =================================================
+        #
+        # The sample username is close to black.
+        #
+        # We intentionally keep this threshold low.
+        # This is what prevents the gray UI from being
+        # detected.
+        #
+        # =================================================
+
+        black = cv2.inRange(
+            gray,
+            0,
+            75
         )
 
-        white_mask = cv2.morphologyEx(
-            white_mask,
+        # =================================================
+        # CLEAN BLACK MASK
+        # =================================================
+
+        black = cv2.morphologyEx(
+            black,
             cv2.MORPH_OPEN,
             cv2.getStructuringElement(
                 cv2.MORPH_RECT,
-                (5, 5)
-            )
+                (2, 2)
+            ),
+            iterations=1
         )
 
+        # =================================================
+        # CONNECT LETTERS
+        # =================================================
+        #
+        # Small horizontal kernel connects characters
+        # belonging to the same word.
+        #
+        # =================================================
+
+        connect_kernel = cv2.getStructuringElement(
+            cv2.MORPH_RECT,
+            (9, 3)
+        )
+
+        connected = cv2.morphologyEx(
+            black,
+            cv2.MORPH_CLOSE,
+            connect_kernel,
+            iterations=1
+        )
+
+        # A second small dilation helps join bold letters
+        # without connecting unrelated UI elements.
+
+        connected = cv2.dilate(
+            connected,
+            cv2.getStructuringElement(
+                cv2.MORPH_RECT,
+                (3, 2)
+            ),
+            iterations=1
+        )
+
+        # =================================================
+        # FIND CANDIDATE TEXT REGIONS
+        # =================================================
+
         contours, _ = cv2.findContours(
-            white_mask,
+            connected,
             cv2.RETR_EXTERNAL,
             cv2.CHAIN_APPROX_SIMPLE
         )
 
-        cards = []
+        candidates = []
 
         for contour in contours:
 
@@ -268,462 +314,1019 @@ def blur_proof_text(
                 contour
             )
 
-            area = w * h
+            # ---------------------------------------------
+            # BASIC SIZE FILTERS
+            # ---------------------------------------------
 
-            # Minimum card dimensions.
-            if w < 150:
+            if w < 25:
                 continue
 
-            if h < 60:
+            if h < 8:
                 continue
 
-            if area < 15000:
+            if w > width * 0.60:
                 continue
 
-            # Ignore giant white regions.
-            if w > width * 0.85:
+            if h > height * 0.15:
                 continue
 
-            if h > height * 0.70:
-                continue
+            # Text should generally be wider than tall.
 
-            # Cards are horizontal.
             aspect = w / max(h, 1)
 
-            if aspect < 1.5:
+            if aspect < 2.0:
                 continue
 
-            cards.append(
-                {
-                    "x": x,
-                    "y": y,
-                    "w": w,
-                    "h": h
-                }
-            )
+            # ---------------------------------------------
+            # REGION PIXELS
+            # ---------------------------------------------
 
-        cards.sort(
-            key=lambda c: (
-                c["y"],
-                c["x"]
-            )
-        )
-
-        print(
-            f"[PROOF] White card candidates: {len(cards)}"
-        )
-
-        # =================================================
-        # FALLBACK CARD DETECTION
-        # =================================================
-
-        if not cards:
-
-            print(
-                "[PROOF] Normal card detection found nothing."
-            )
-
-            fallback_mask = cv2.inRange(
-                gray,
-                200,
-                255
-            )
-
-            fallback_mask = cv2.morphologyEx(
-                fallback_mask,
-                cv2.MORPH_CLOSE,
-                cv2.getStructuringElement(
-                    cv2.MORPH_RECT,
-                    (21, 21)
-                ),
-                iterations=2
-            )
-
-            contours, _ = cv2.findContours(
-                fallback_mask,
-                cv2.RETR_EXTERNAL,
-                cv2.CHAIN_APPROX_SIMPLE
-            )
-
-            for contour in contours:
-
-                x, y, w, h = cv2.boundingRect(
-                    contour
-                )
-
-                if w < 150:
-                    continue
-
-                if h < 60:
-                    continue
-
-                if w > width * 0.85:
-                    continue
-
-                if h > height * 0.70:
-                    continue
-
-                if w / max(h, 1) < 1.5:
-                    continue
-
-                cards.append(
-                    {
-                        "x": x,
-                        "y": y,
-                        "w": w,
-                        "h": h
-                    }
-                )
-
-            cards.sort(
-                key=lambda c: (
-                    c["y"],
-                    c["x"]
-                )
-            )
-
-            print(
-                f"[PROOF] Fallback cards: {len(cards)}"
-            )
-
-        # =================================================
-        # STEP 2
-        # FIND USERNAME IN EACH CARD
-        # =================================================
-
-        username_regions = []
-
-        for card_index, card in enumerate(cards):
-
-            cx = card["x"]
-            cy = card["y"]
-            cw = card["w"]
-            ch = card["h"]
-
-            # -------------------------------------------------
-            # ONLY SEARCH TOP PORTION
-            # -------------------------------------------------
-
-            search_x1 = cx + int(cw * 0.025)
-
-            # Username is normally toward the left.
-            search_x2 = cx + int(cw * 0.72)
-
-            # Username is at the top of the card.
-            search_y1 = cy + int(ch * 0.04)
-            search_y2 = cy + int(ch * 0.40)
-
-            search_x1 = max(
-                0,
-                search_x1
-            )
-
-            search_y1 = max(
-                0,
-                search_y1
-            )
-
-            search_x2 = min(
-                width,
-                search_x2
-            )
-
-            search_y2 = min(
-                height,
-                search_y2
-            )
-
-            if search_x2 <= search_x1:
-                continue
-
-            if search_y2 <= search_y1:
-                continue
-
-            roi = gray[
-                search_y1:search_y2,
-                search_x1:search_x2
+            region_gray = gray[
+                y:y + h,
+                x:x + w
             ]
 
-            if roi.size == 0:
+            if region_gray.size == 0:
                 continue
 
-            # =================================================
-            # BLACK TEXT MASK
-            # =================================================
+            dark_ratio = float(
+                np.mean(
+                    region_gray <= 90
+                )
+            )
 
-            black = cv2.inRange(
-                roi,
+            black_ratio = float(
+                np.mean(
+                    region_gray <= 75
+                )
+            )
+
+            # Need a meaningful amount of black pixels.
+
+            if black_ratio < 0.035:
+                continue
+
+            if dark_ratio < 0.05:
+                continue
+
+            # ---------------------------------------------
+            # BACKGROUND CHECK
+            # ---------------------------------------------
+            #
+            # Username should sit on a light card.
+            #
+            # This is important because the screenshot
+            # contains other dark objects.
+            #
+            # ---------------------------------------------
+
+            pad = max(
+                5,
+                int(h * 0.7)
+            )
+
+            sx1 = max(
                 0,
-                105
+                x - pad
             )
 
-            # Close small gaps inside letters.
-            black = cv2.morphologyEx(
-                black,
-                cv2.MORPH_CLOSE,
-                cv2.getStructuringElement(
-                    cv2.MORPH_RECT,
-                    (3, 3)
-                ),
-                iterations=1
+            sy1 = max(
+                0,
+                y - pad
             )
 
-            # Connect characters belonging to a username.
-            black_grouped = cv2.dilate(
-                black,
-                cv2.getStructuringElement(
-                    cv2.MORPH_RECT,
-                    (5, 3)
-                ),
-                iterations=1
+            sx2 = min(
+                width,
+                x + w + pad
             )
 
-            contours, _ = cv2.findContours(
-                black_grouped,
-                cv2.RETR_EXTERNAL,
-                cv2.CHAIN_APPROX_SIMPLE
+            sy2 = min(
+                height,
+                y + h + pad
             )
 
-            candidate_lines = []
+            surrounding = gray[
+                sy1:sy2,
+                sx1:sx2
+            ]
 
-            for contour in contours:
+            if surrounding.size == 0:
+                continue
 
-                rx, ry, rw, rh = cv2.boundingRect(
-                    contour
+            # Remove the candidate itself from the
+            # surrounding brightness calculation.
+
+            background_values = surrounding.copy()
+
+            rx1 = x - sx1
+            ry1 = y - sy1
+            rx2 = rx1 + w
+            ry2 = ry1 + h
+
+            background_values[
+                ry1:ry2,
+                rx1:rx2
+            ] = 255
+
+            background_mean = float(
+                np.mean(
+                    background_values
+                )
+            )
+
+            candidate_mean = float(
+                np.mean(
+                    region_gray
+                )
+            )
+
+            # Light card around black username.
+
+            if background_mean < 145:
+                continue
+
+            if background_mean - candidate_mean < 45:
+                continue
+
+            # ---------------------------------------------
+            # TEXT DENSITY
+            # ---------------------------------------------
+            #
+            # Real text has black pixels distributed
+            # across a horizontal line.
+            #
+            # Icons often have concentrated black pixels.
+            #
+            # ---------------------------------------------
+
+            rows = np.sum(
+                region_gray <= 75,
+                axis=1
+            )
+
+            cols = np.sum(
+                region_gray <= 75,
+                axis=0
+            )
+
+            active_rows = np.sum(
+                rows >= max(
+                    2,
+                    int(w * 0.015)
+                )
+            )
+
+            active_cols = np.sum(
+                cols >= max(
+                    1,
+                    int(h * 0.08)
+                )
+            )
+
+            # Require a reasonably populated text line.
+
+            if active_rows < max(
+                4,
+                int(h * 0.40)
+            ):
+                continue
+
+            if active_cols < max(
+                5,
+                int(w * 0.20)
+            ):
+                continue
+
+            # ---------------------------------------------
+            # COMPONENT ANALYSIS
+            # ---------------------------------------------
+            #
+            # Check how many separate dark components exist.
+            #
+            # A username such as Arthurbns29 has multiple
+            # character components.
+            #
+            # ---------------------------------------------
+
+            local_mask = cv2.inRange(
+                region_gray,
+                0,
+                90
+            )
+
+            num_labels, labels, stats, centroids = (
+                cv2.connectedComponentsWithStats(
+                    local_mask,
+                    connectivity=8
+                )
+            )
+
+            character_like = 0
+
+            for i in range(
+                1,
+                num_labels
+            ):
+
+                cx = stats[i, cv2.CC_STAT_WIDTH]
+                cy = stats[i, cv2.CC_STAT_HEIGHT]
+                carea = stats[i, cv2.CC_STAT_AREA]
+
+                if (
+                    cx >= 2
+                    and cy >= 3
+                    and carea >= 5
+                    and cx <= h * 2.5
+                ):
+                    character_like += 1
+
+            # Need several pieces of text.
+
+            if character_like < 3:
+                continue
+
+            candidates.append(
+                (
+                    x,
+                    y,
+                    w,
+                    h,
+                    black_ratio,
+                    dark_ratio,
+                    character_like
+                )
+            )
+
+        print(
+            f"[PROOF] Visual bold-text candidates: "
+            f"{len(candidates)}"
+        )
+
+        # =================================================
+        # OCR CHARACTER DETECTION
+        # =================================================
+        #
+        # OCR is used as a SECONDARY confirmation.
+        #
+        # Character boxes are especially useful when the
+        # username is bold but the contour detector splits
+        # some letters apart.
+        #
+        # =================================================
+
+        character_boxes = []
+
+        ocr_images = [
+            enlarged,
+            cv2.threshold(
+                enlarged,
+                0,
+                255,
+                cv2.THRESH_BINARY + cv2.THRESH_OTSU
+            )[1],
+            cv2.adaptiveThreshold(
+                enlarged,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY,
+                31,
+                9
+            )
+        ]
+
+        for processed in ocr_images:
+
+            try:
+
+                boxes = pytesseract.image_to_boxes(
+                    processed,
+                    config="--oem 3 --psm 11"
                 )
 
-                # Minimum horizontal text size.
-                if rw < 25:
-                    continue
+            except Exception as e:
 
-                if rh < 7:
-                    continue
-
-                # Don't select huge UI areas.
-                if rw > cw * 0.65:
-                    continue
-
-                if rh > ch * 0.30:
-                    continue
-
-                aspect = rw / max(
-                    rh,
-                    1
+                print(
+                    f"[PROOF] Character OCR error: {e}"
                 )
 
-                # Username is horizontal.
-                if aspect < 2.0:
+                continue
+
+            if not boxes:
+                continue
+
+            for line in boxes.splitlines():
+
+                parts = line.split()
+
+                if len(parts) < 6:
                     continue
 
-                # Convert to original-image coordinates.
-                x1 = search_x1 + rx
-                y1 = search_y1 + ry
-                x2 = search_x1 + rx + rw
-                y2 = search_y1 + ry + rh
+                try:
 
-                actual = gray[
-                    y1:y2,
+                    char = parts[0]
+
+                    x1 = int(
+                        parts[1]
+                    ) / scale
+
+                    y1 = int(
+                        parts[2]
+                    ) / scale
+
+                    x2 = int(
+                        parts[3]
+                    ) / scale
+
+                    y2 = int(
+                        parts[4]
+                    ) / scale
+
+                except Exception:
+                    continue
+
+                # Tesseract uses bottom-left coordinates.
+                # Convert to normal image coordinates.
+
+                converted_y1 = (
+                    height - y2
+                )
+
+                converted_y2 = (
+                    height - y1
+                )
+
+                x1 = int(
+                    max(
+                        0,
+                        min(width, x1)
+                    )
+                )
+
+                x2 = int(
+                    max(
+                        0,
+                        min(width, x2)
+                    )
+                )
+
+                converted_y1 = int(
+                    max(
+                        0,
+                        min(
+                            height,
+                            converted_y1
+                        )
+                    )
+                )
+
+                converted_y2 = int(
+                    max(
+                        0,
+                        min(
+                            height,
+                            converted_y2
+                        )
+                    )
+                )
+
+                cw = x2 - x1
+                ch = converted_y2 - converted_y1
+
+                if cw < 2:
+                    continue
+
+                if ch < 4:
+                    continue
+
+                # Only accept characters that are actually
+                # very dark in the original image.
+
+                sample = gray[
+                    converted_y1:converted_y2,
                     x1:x2
                 ]
 
-                if actual.size == 0:
+                if sample.size == 0:
                     continue
 
-                # =================================================
-                # DARK PIXEL RATIO
-                # =================================================
-
-                dark_ratio = float(
-                    np.mean(
-                        actual <= 110
-                    )
+                dark_ratio = np.mean(
+                    sample <= 90
                 )
 
                 if dark_ratio < 0.08:
                     continue
 
-                # =================================================
-                # MEAN DARKNESS
-                # =================================================
-
-                mean_value = float(
-                    np.mean(actual)
+                character_boxes.append(
+                    (
+                        x1,
+                        converted_y1,
+                        x2,
+                        converted_y2,
+                        char
+                    )
                 )
 
-                if mean_value > 180:
-                    continue
+        print(
+            f"[PROOF] OCR character candidates: "
+            f"{len(character_boxes)}"
+        )
 
-                # =================================================
-                # VERTICAL POSITION
-                # =================================================
+        # =================================================
+        # GROUP OCR CHARACTERS INTO TEXT LINES
+        # =================================================
 
-                relative_y = (
-                    y1 - cy
-                ) / max(
-                    ch,
-                    1
+        ocr_groups = []
+
+        for box in character_boxes:
+
+            x1, y1, x2, y2, char = box
+
+            cy = (
+                y1 + y2
+            ) / 2
+
+            placed = False
+
+            for group in ocr_groups:
+
+                gx1 = group["x1"]
+                gy1 = group["y1"]
+                gx2 = group["x2"]
+                gy2 = group["y2"]
+
+                gcy = (
+                    gy1 + gy2
+                ) / 2
+
+                gh = (
+                    gy2 - gy1
                 )
 
-                # Username must be near top.
-                if relative_y > 0.35:
-                    continue
+                # Same text line.
 
-                candidate_lines.append(
+                if abs(cy - gcy) <= max(
+                    8,
+                    gh * 0.65
+                ):
+
+                    # Don't connect characters that are
+                    # extremely far apart.
+
+                    horizontal_gap = max(
+                        0,
+                        max(
+                            x1 - gx2,
+                            gx1 - x2
+                        )
+                    )
+
+                    if horizontal_gap <= 45:
+
+                        group["x1"] = min(
+                            gx1,
+                            x1
+                        )
+
+                        group["y1"] = min(
+                            gy1,
+                            y1
+                        )
+
+                        group["x2"] = max(
+                            gx2,
+                            x2
+                        )
+
+                        group["y2"] = max(
+                            gy2,
+                            y2
+                        )
+
+                        group["count"] += 1
+
+                        placed = True
+                        break
+
+            if not placed:
+
+                ocr_groups.append(
                     {
                         "x1": x1,
                         "y1": y1,
                         "x2": x2,
                         "y2": y2,
-                        "dark_ratio": dark_ratio,
-                        "mean": mean_value
+                        "count": 1
                     }
                 )
 
-            # =================================================
-            # SELECT BEST USERNAME CANDIDATE
-            # =================================================
+        # =================================================
+        # VALIDATE OCR GROUPS
+        # =================================================
 
-            if not candidate_lines:
+        for group in ocr_groups:
 
-                print(
-                    f"[PROOF] Card {card_index + 1}: "
-                    f"no username candidate."
-                )
+            x1 = group["x1"]
+            y1 = group["y1"]
+            x2 = group["x2"]
+            y2 = group["y2"]
 
+            w = x2 - x1
+            h = y2 - y1
+
+            if w < 25:
                 continue
 
-            for candidate in candidate_lines:
-
-                rw = (
-                    candidate["x2"]
-                    -
-                    candidate["x1"]
-                )
-
-                rh = (
-                    candidate["y2"]
-                    -
-                    candidate["y1"]
-                )
-
-                score = 0
-
-                # Wider text.
-                if rw >= 40:
-                    score += 20
-
-                if rw >= 70:
-                    score += 20
-
-                if rw >= 100:
-                    score += 10
-
-                # Dark/bold text.
-                if candidate["dark_ratio"] >= 0.10:
-                    score += 15
-
-                if candidate["dark_ratio"] >= 0.15:
-                    score += 15
-
-                if candidate["dark_ratio"] >= 0.20:
-                    score += 15
-
-                # Larger text.
-                if rh >= 10:
-                    score += 10
-
-                if rh >= 14:
-                    score += 10
-
-                candidate["score"] = score
-
-            candidate_lines.sort(
-                key=lambda c: c["score"],
-                reverse=True
-            )
-
-            best = candidate_lines[0]
-
-            if best["score"] < 30:
-
-                print(
-                    f"[PROOF] Card {card_index + 1}: "
-                    f"candidate too weak."
-                )
-
+            if h < 7:
                 continue
 
-            username_regions.append(
-                best
+            if group["count"] < 3:
+                continue
+
+            if w > width * 0.60:
+                continue
+
+            aspect = w / max(
+                h,
+                1
             )
 
-            print(
-                f"[PROOF] Card {card_index + 1}: "
-                f"username found at "
-                f"({best['x1']}, {best['y1']}) -> "
-                f"({best['x2']}, {best['y2']}) "
-                f"score={best['score']}"
+            if aspect < 2.0:
+                continue
+
+            sample = gray[
+                y1:y2,
+                x1:x2
+            ]
+
+            if sample.size == 0:
+                continue
+
+            black_ratio = np.mean(
+                sample <= 75
+            )
+
+            if black_ratio < 0.025:
+                continue
+
+            # Background check.
+
+            pad = max(
+                5,
+                int(h * 0.8)
+            )
+
+            sx1 = max(
+                0,
+                x1 - pad
+            )
+
+            sy1 = max(
+                0,
+                y1 - pad
+            )
+
+            sx2 = min(
+                width,
+                x2 + pad
+            )
+
+            sy2 = min(
+                height,
+                y2 + pad
+            )
+
+            surroundings = gray[
+                sy1:sy2,
+                sx1:sx2
+            ]
+
+            if surroundings.size == 0:
+                continue
+
+            background_mean = float(
+                np.mean(
+                    surroundings
+                )
+            )
+
+            candidate_mean = float(
+                np.mean(
+                    sample
+                )
+            )
+
+            if background_mean < 145:
+                continue
+
+            if (
+                background_mean
+                - candidate_mean
+                < 40
+            ):
+                continue
+
+            candidates.append(
+                (
+                    x1,
+                    y1,
+                    w,
+                    h,
+                    black_ratio,
+                    black_ratio,
+                    group["count"]
+                )
             )
 
         # =================================================
-        # STEP 3
-        # NO USERNAMES
+        # MERGE CANDIDATES
         # =================================================
 
-        if not username_regions:
+        regions = []
+
+        for candidate in candidates:
+
+            x, y, w, h, black_ratio, dark_ratio, count = (
+                candidate
+            )
+
+            regions.append(
+                {
+                    "x1": int(x),
+                    "y1": int(y),
+                    "x2": int(x + w),
+                    "y2": int(y + h),
+                    "score": 0
+                }
+            )
+
+        # =================================================
+        # MERGE OVERLAPPING / NEARBY TEXT DETECTIONS
+        # =================================================
+
+        changed = True
+
+        while changed:
+
+            changed = False
+            merged = []
+            used = [False] * len(regions)
+
+            for i, a in enumerate(regions):
+
+                if used[i]:
+                    continue
+
+                current = {
+                    "x1": a["x1"],
+                    "y1": a["y1"],
+                    "x2": a["x2"],
+                    "y2": a["y2"],
+                    "score": a.get(
+                        "score",
+                        0
+                    )
+                }
+
+                used[i] = True
+
+                for j in range(
+                    i + 1,
+                    len(regions)
+                ):
+
+                    if used[j]:
+                        continue
+
+                    b = regions[j]
+
+                    ax1 = current["x1"]
+                    ay1 = current["y1"]
+                    ax2 = current["x2"]
+                    ay2 = current["y2"]
+
+                    bx1 = b["x1"]
+                    by1 = b["y1"]
+                    bx2 = b["x2"]
+                    by2 = b["y2"]
+
+                    horizontal_gap = max(
+                        0,
+                        max(
+                            bx1 - ax2,
+                            ax1 - bx2
+                        )
+                    )
+
+                    vertical_gap = max(
+                        0,
+                        max(
+                            by1 - ay2,
+                            ay1 - by2
+                        )
+                    )
+
+                    overlap_x = min(
+                        ax2,
+                        bx2
+                    ) - max(
+                        ax1,
+                        bx1
+                    )
+
+                    overlap_y = min(
+                        ay2,
+                        by2
+                    ) - max(
+                        ay1,
+                        by1
+                    )
+
+                    overlap = (
+                        overlap_x > 0
+                        and overlap_y > 0
+                    )
+
+                    same_line = (
+                        horizontal_gap <= 25
+                        and vertical_gap <= 8
+                    )
+
+                    if overlap or same_line:
+
+                        current["x1"] = min(
+                            ax1,
+                            bx1
+                        )
+
+                        current["y1"] = min(
+                            ay1,
+                            by1
+                        )
+
+                        current["x2"] = max(
+                            ax2,
+                            bx2
+                        )
+
+                        current["y2"] = max(
+                            ay2,
+                            by2
+                        )
+
+                        used[j] = True
+                        changed = True
+
+                merged.append(
+                    current
+                )
+
+            regions = merged
+
+        # =================================================
+        # FINAL STRICT VALIDATION
+        # =================================================
+
+        accepted_regions = []
+
+        for region in regions:
+
+            x1 = region["x1"]
+            y1 = region["y1"]
+            x2 = region["x2"]
+            y2 = region["y2"]
+
+            x1 = max(
+                0,
+                min(
+                    width - 1,
+                    x1
+                )
+            )
+
+            y1 = max(
+                0,
+                min(
+                    height - 1,
+                    y1
+                )
+            )
+
+            x2 = max(
+                x1 + 1,
+                min(
+                    width,
+                    x2
+                )
+            )
+
+            y2 = max(
+                y1 + 1,
+                min(
+                    height,
+                    y2
+                )
+            )
+
+            w = x2 - x1
+            h = y2 - y1
+
+            # ---------------------------------------------
+            # FINAL SIZE CHECK
+            # ---------------------------------------------
+
+            if w < 30:
+                continue
+
+            if h < 8:
+                continue
+
+            if w > width * 0.55:
+                continue
+
+            if h > height * 0.14:
+                continue
+
+            aspect = w / max(
+                h,
+                1
+            )
+
+            if aspect < 2.2:
+                continue
+
+            # ---------------------------------------------
+            # FINAL BLACK PIXEL CHECK
+            # ---------------------------------------------
+
+            sample = gray[
+                y1:y2,
+                x1:x2
+            ]
+
+            if sample.size == 0:
+                continue
+
+            black_ratio = np.mean(
+                sample <= 75
+            )
+
+            dark_ratio = np.mean(
+                sample <= 100
+            )
+
+            if black_ratio < 0.025:
+                continue
+
+            if dark_ratio < 0.045:
+                continue
+
+            # ---------------------------------------------
+            # CHECK TEXT-LIKE ROW DISTRIBUTION
+            # ---------------------------------------------
+
+            row_black = np.sum(
+                sample <= 75,
+                axis=1
+            )
+
+            useful_rows = np.sum(
+                row_black >= max(
+                    2,
+                    int(w * 0.01)
+                )
+            )
+
+            if useful_rows < max(
+                4,
+                int(h * 0.45)
+            ):
+                continue
+
+            # ---------------------------------------------
+            # LIGHT BACKGROUND
+            # ---------------------------------------------
+
+            pad = max(
+                7,
+                int(h * 0.8)
+            )
+
+            sx1 = max(
+                0,
+                x1 - pad
+            )
+
+            sy1 = max(
+                0,
+                y1 - pad
+            )
+
+            sx2 = min(
+                width,
+                x2 + pad
+            )
+
+            sy2 = min(
+                height,
+                y2 + pad
+            )
+
+            surrounding = gray[
+                sy1:sy2,
+                sx1:sx2
+            ]
+
+            if surrounding.size == 0:
+                continue
+
+            surrounding_mean = float(
+                np.mean(
+                    surrounding
+                )
+            )
+
+            candidate_mean = float(
+                np.mean(
+                    sample
+                )
+            )
+
+            if surrounding_mean < 150:
+                continue
+
+            if (
+                surrounding_mean
+                - candidate_mean
+                < 45
+            ):
+                continue
+
+            # ---------------------------------------------
+            # ACCEPT
+            # ---------------------------------------------
+
+            accepted_regions.append(
+                (
+                    x1,
+                    y1,
+                    x2,
+                    y2
+                )
+            )
+
+        print(
+            f"[PROOF] Final bold username regions: "
+            f"{len(accepted_regions)}"
+        )
+
+        # =================================================
+        # NO DETECTION
+        # =================================================
+
+        if not accepted_regions:
 
             print(
-                "[PROOF] No usernames detected."
+                "[PROOF] No bold black username text found."
             )
 
             return image_data
 
         # =================================================
-        # STEP 4
         # CREATE MASK
         # =================================================
 
         mask = np.zeros(
-            (height, width),
+            (
+                height,
+                width
+            ),
             dtype=np.uint8
         )
 
-        for region in username_regions:
+        for (
+            x1,
+            y1,
+            x2,
+            y2
+        ) in accepted_regions:
 
-            x1 = int(
-                region["x1"]
-            )
+            w = x2 - x1
+            h = y2 - y1
 
-            y1 = int(
-                region["y1"]
-            )
-
-            x2 = int(
-                region["x2"]
-            )
-
-            y2 = int(
-                region["y2"]
-            )
-
-            rw = x2 - x1
-            rh = y2 - y1
-
-            # =================================================
-            # TIGHT PADDING
-            # =================================================
+            # Small padding.
             #
-            # Keep the blur away from date/time and buttons.
-            # =================================================
-
+            # This covers the complete bold username,
+            # including anti-aliased edges, without creating
+            # a huge blurred rectangle.
+            #
             pad_x = max(
                 5,
-                int(rw * 0.07)
+                int(w * 0.05)
             )
 
             pad_y = max(
                 4,
-                int(rh * 0.40)
+                int(h * 0.30)
             )
 
             bx1 = max(
@@ -748,19 +1351,19 @@ def blur_proof_text(
 
             cv2.rectangle(
                 mask,
-                (bx1, by1),
-                (bx2, by2),
+                (
+                    bx1,
+                    by1
+                ),
+                (
+                    bx2,
+                    by2
+                ),
                 255,
                 -1
             )
 
-            print(
-                f"[PROOF] Mask region: "
-                f"{bx1},{by1} -> {bx2},{by2}"
-            )
-
         # =================================================
-        # STEP 5
         # SMALL MASK EXPANSION
         # =================================================
 
@@ -774,35 +1377,29 @@ def blur_proof_text(
         )
 
         # =================================================
-        # STEP 6
-        # STRONG BLUR
+        # BLUR
         # =================================================
 
         blurred = original.filter(
             ImageFilter.GaussianBlur(
-                radius=18
+                radius=22
             )
         )
-
-        # =================================================
-        # STEP 7
-        # SOFT EDGES
-        # =================================================
 
         mask_image = Image.fromarray(
             mask,
             mode="L"
         )
 
+        # Very small soft edge.
         mask_image = mask_image.filter(
             ImageFilter.GaussianBlur(
-                radius=1
+                radius=1.0
             )
         )
 
         # =================================================
-        # STEP 8
-        # APPLY BLUR
+        # COMPOSITE
         # =================================================
 
         result = Image.composite(
@@ -812,25 +1409,7 @@ def blur_proof_text(
         )
 
         # =================================================
-        # STEP 9
-        # SECOND BLUR PASS
-        # =================================================
-
-        second_blur = result.filter(
-            ImageFilter.GaussianBlur(
-                radius=7
-            )
-        )
-
-        result = Image.composite(
-            second_blur,
-            result,
-            mask_image
-        )
-
-        # =================================================
-        # STEP 10
-        # OUTPUT
+        # SAVE
         # =================================================
 
         output = io.BytesIO()
@@ -843,8 +1422,7 @@ def blur_proof_text(
         output.seek(0)
 
         print(
-            f"[PROOF] Successfully blurred "
-            f"{len(username_regions)} username(s)."
+            "[PROOF] Bold black username text blurred successfully."
         )
 
         return output.getvalue()
