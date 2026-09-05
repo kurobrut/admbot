@@ -2,6 +2,8 @@ import os
 import json
 import asyncio
 import discord
+import io
+from PIL import Image, ImageFilter
 
 from discord import app_commands
 from discord.ext import commands
@@ -60,6 +62,7 @@ DEFAULT_CONFIG = {
     "vouch_channel_id": int(os.getenv("VOUCH_CHANNEL_ID", 0)) or None,
     "status_channel_id": int(os.getenv("STATUS_CHANNEL_ID", 0)) or None,
     "welcome_goodbye_channel_id": int(os.getenv("WELCOME_GOODBYE_CHANNEL_ID", 0)) or None,
+    "proof_channel_id": int(os.getenv("PROOF_CHANNEL_ID", 0)) or None,
     "staff_role_id": int(os.getenv("STAFF_ROLE_ID", 0)) or None,
     "customer_role_id": int(os.getenv("CUSTOMER_ROLE_ID", 1545438540362555463)) or 1545438540362555463
 }
@@ -132,6 +135,40 @@ def styled_embed(title, description):
         text="୨୧ ali's adm house • Customer Shop ♡"
     )
     return embed
+
+
+# =========================================================
+# IMAGE BLUR HELPER
+# =========================================================
+
+def blur_names(image_data: bytes) -> bytes:
+    """Blur the top portion of an image where usernames typically appear."""
+    try:
+        # Open image from bytes
+        img = Image.open(io.BytesIO(image_data)).convert("RGB")
+        
+        # Get image dimensions
+        width, height = img.size
+        
+        # Blur the top 15% of the image (where usernames appear in screenshots)
+        blur_height = int(height * 0.15)
+        
+        # Create a blurred copy of the top portion
+        top_portion = img.crop((0, 0, width, blur_height))
+        blurred_portion = top_portion.filter(ImageFilter.GaussianBlur(radius=15))
+        
+        # Paste the blurred portion back
+        img.paste(blurred_portion, (0, 0))
+        
+        # Save to bytes
+        output = io.BytesIO()
+        img.save(output, format="PNG")
+        output.seek(0)
+        return output.getvalue()
+    
+    except Exception as e:
+        print(f"Error blurring image: {e}")
+        return image_data
 
 
 # =========================================================
@@ -665,6 +702,37 @@ async def setupjoins(
     )
 
 
+@bot.tree.command(
+    name="setupproof",
+    description="Configure only the proof submission channel."
+)
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    proof_channel="Channel where proof submissions will be posted"
+)
+async def setupproof(
+    interaction: discord.Interaction,
+    proof_channel: discord.TextChannel
+):
+
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message(
+            "❌ You need **Administrator** permission to use `/setupproof`.",
+            ephemeral=True
+        )
+
+    config["proof_channel_id"] = proof_channel.id
+    save_config(config)
+
+    await interaction.response.send_message(
+        "╭───────────────୨୧\n"
+        "│ **Proof Setup Complete! ♡**\n"
+        "╰───────────────୨୧\n\n"
+        f"📸 Proof Channel: {proof_channel.mention}",
+        ephemeral=True
+    )
+
+
 # =========================================================
 # SLASH COMMANDS - UTILITY
 # =========================================================
@@ -724,6 +792,83 @@ async def ping(interaction: discord.Interaction):
     embed.set_footer(text="ali's adm house • Bot Status ♡")
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(
+    name="proof",
+    description="Submit a proof screenshot with names automatically blurred."
+)
+@app_commands.describe(
+    image="Screenshot/proof image (names in top area will be blurred)",
+    description="Optional description of the proof"
+)
+async def proof(
+    interaction: discord.Interaction,
+    image: discord.Attachment,
+    description: str = "No description provided"
+):
+
+    proof_channel_id = config.get("proof_channel_id")
+    proof_channel = (
+        interaction.guild.get_channel(proof_channel_id)
+        if proof_channel_id and interaction.guild
+        else None
+    )
+
+    if proof_channel is None:
+        return await interaction.response.send_message(
+            "❌ The proof channel hasn't been configured yet.\n\nAsk an administrator to use `/setupproof`.",
+            ephemeral=True
+        )
+
+    # Check if it's an image
+    if not image.content_type.startswith("image/"):
+        return await interaction.response.send_message(
+            "❌ Please upload an image file!",
+            ephemeral=True
+        )
+
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        # Download image
+        image_data = await image.read()
+        
+        # Blur names
+        blurred_data = blur_names(image_data)
+        
+        # Create embed
+        embed = discord.Embed(
+            title="୨୧・𝘯𝘦𝘸 𝘱𝘳𝘰𝘰𝘧 𝘴𝘶𝘣𝘮𝘪𝘴𝘴𝘪𝘰𝘯 ♡",
+            description=(
+                f"**Submitter:** {interaction.user.mention}\n"
+                f"**Description:** {description}\n\n"
+                "Names in the screenshot have been automatically blurred for privacy. ♡"
+            ),
+            color=PINK
+        )
+        embed.set_footer(text="ali's adm house • Proof Submissions ♡")
+        
+        # Send to proof channel with blurred image
+        await proof_channel.send(
+            embed=embed,
+            file=discord.File(
+                io.BytesIO(blurred_data),
+                filename="proof.png"
+            )
+        )
+        
+        await interaction.followup.send(
+            "✅ Your proof has been submitted! Names have been blurred for privacy. ♡",
+            ephemeral=True
+        )
+    
+    except Exception as e:
+        print(f"Error processing proof: {e}")
+        await interaction.followup.send(
+            "❌ There was an error processing your image. Please try again.",
+            ephemeral=True
+        )
 
 
 # =========================================================
