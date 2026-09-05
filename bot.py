@@ -166,31 +166,35 @@ def is_staff(interaction: discord.Interaction):
 
 
 # =========================================================
-# BLACK HIGHLIGHTED TEXT BLUR
+# TEMPLATE-BASED USERNAME BLUR
 # =========================================================
 #
-# Targets large bold black text such as:
+# Designed for screenshots like:
 #
-#     SavvyS122994
-#
-# It does NOT simply blur every dark pixel.
+# ┌─────────────────────────────────────┐
+# │ Arthurbns29                         │
+# │ Sep 5, 2026              10:30 PM   │
+# │                                     │
+# │ [        View       ] [   Report ]  │
+# └─────────────────────────────────────┘
 #
 # The detector:
-# - Uses OCR first
-# - Checks actual black pixels
-# - Requires large text
-# - Checks for a light surrounding background
-# - Selects the strongest matching text only
-# - Uses tight padding
 #
-# This prevents:
-# - View button
-# - Report button
-# - gray boxes
-# - refresh icon
-# - borders
-# - date/time
-# from being blurred.
+# 1. Finds the large white cards.
+# 2. Looks only near the TOP of each card.
+# 3. Looks for large black horizontal text.
+# 4. Blurs only that text.
+#
+# It does NOT intentionally target:
+#
+# - View
+# - Report
+# - Date
+# - Time
+# - gray background
+# - item icons
+# - refresh icons
+#
 # =========================================================
 
 def blur_proof_text(
@@ -200,870 +204,566 @@ def blur_proof_text(
 
     try:
 
-        print("[PROOF] Starting large black-text scan...")
+        print(
+            "[PROOF] Starting template-based username scan..."
+        )
 
         original = Image.open(
             io.BytesIO(image_data)
         ).convert("RGB")
 
-        width, height = original.size
+        rgb = np.array(original)
+
+        height, width = rgb.shape[:2]
 
         if width <= 0 or height <= 0:
             return image_data
-
-        rgb = np.array(original)
 
         gray = cv2.cvtColor(
             rgb,
             cv2.COLOR_RGB2GRAY
         )
 
-        # -------------------------------------------------
-        # UPSCALE
-        # -------------------------------------------------
+        # =================================================
+        # STEP 1
+        # FIND WHITE/LIGHT CARDS
+        # =================================================
 
-        scale = 3
-
-        enlarged = cv2.resize(
+        white_mask = cv2.inRange(
             gray,
-            None,
-            fx=scale,
-            fy=scale,
-            interpolation=cv2.INTER_CUBIC
+            220,
+            255
         )
 
-        # -------------------------------------------------
-        # OCR CANDIDATES
-        # -------------------------------------------------
+        white_mask = cv2.morphologyEx(
+            white_mask,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(
+                cv2.MORPH_RECT,
+                (15, 15)
+            ),
+            iterations=2
+        )
 
-        candidates = []
-
-        ocr_variants = [
-            (
-                enlarged,
-                "--oem 3 --psm 11"
-            ),
-            (
-                cv2.threshold(
-                    enlarged,
-                    0,
-                    255,
-                    cv2.THRESH_BINARY + cv2.THRESH_OTSU
-                )[1],
-                "--oem 3 --psm 11"
-            ),
-            (
-                cv2.adaptiveThreshold(
-                    enlarged,
-                    255,
-                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                    cv2.THRESH_BINARY,
-                    31,
-                    9
-                ),
-                "--oem 3 --psm 11"
-            ),
-            (
-                enlarged,
-                "--oem 3 --psm 12"
+        white_mask = cv2.morphologyEx(
+            white_mask,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(
+                cv2.MORPH_RECT,
+                (5, 5)
             )
-        ]
+        )
 
-        for processed, ocr_config in ocr_variants:
+        contours, _ = cv2.findContours(
+            white_mask,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE
+        )
 
-            try:
+        cards = []
 
-                data = pytesseract.image_to_data(
-                    processed,
-                    config=ocr_config,
-                    output_type=pytesseract.Output.DICT
+        for contour in contours:
+
+            x, y, w, h = cv2.boundingRect(
+                contour
+            )
+
+            area = w * h
+
+            # Minimum card dimensions.
+            if w < 150:
+                continue
+
+            if h < 60:
+                continue
+
+            if area < 15000:
+                continue
+
+            # Ignore giant white regions.
+            if w > width * 0.85:
+                continue
+
+            if h > height * 0.70:
+                continue
+
+            # Cards are horizontal.
+            aspect = w / max(h, 1)
+
+            if aspect < 1.5:
+                continue
+
+            cards.append(
+                {
+                    "x": x,
+                    "y": y,
+                    "w": w,
+                    "h": h
+                }
+            )
+
+        cards.sort(
+            key=lambda c: (
+                c["y"],
+                c["x"]
+            )
+        )
+
+        print(
+            f"[PROOF] White card candidates: {len(cards)}"
+        )
+
+        # =================================================
+        # FALLBACK CARD DETECTION
+        # =================================================
+
+        if not cards:
+
+            print(
+                "[PROOF] Normal card detection found nothing."
+            )
+
+            fallback_mask = cv2.inRange(
+                gray,
+                200,
+                255
+            )
+
+            fallback_mask = cv2.morphologyEx(
+                fallback_mask,
+                cv2.MORPH_CLOSE,
+                cv2.getStructuringElement(
+                    cv2.MORPH_RECT,
+                    (21, 21)
+                ),
+                iterations=2
+            )
+
+            contours, _ = cv2.findContours(
+                fallback_mask,
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE
+            )
+
+            for contour in contours:
+
+                x, y, w, h = cv2.boundingRect(
+                    contour
                 )
 
-            except Exception as e:
+                if w < 150:
+                    continue
+
+                if h < 60:
+                    continue
+
+                if w > width * 0.85:
+                    continue
+
+                if h > height * 0.70:
+                    continue
+
+                if w / max(h, 1) < 1.5:
+                    continue
+
+                cards.append(
+                    {
+                        "x": x,
+                        "y": y,
+                        "w": w,
+                        "h": h
+                    }
+                )
+
+            cards.sort(
+                key=lambda c: (
+                    c["y"],
+                    c["x"]
+                )
+            )
+
+            print(
+                f"[PROOF] Fallback cards: {len(cards)}"
+            )
+
+        # =================================================
+        # STEP 2
+        # FIND USERNAME IN EACH CARD
+        # =================================================
+
+        username_regions = []
+
+        for card_index, card in enumerate(cards):
+
+            cx = card["x"]
+            cy = card["y"]
+            cw = card["w"]
+            ch = card["h"]
+
+            # -------------------------------------------------
+            # ONLY SEARCH TOP PORTION
+            # -------------------------------------------------
+
+            search_x1 = cx + int(cw * 0.025)
+
+            # Username is normally toward the left.
+            search_x2 = cx + int(cw * 0.72)
+
+            # Username is at the top of the card.
+            search_y1 = cy + int(ch * 0.04)
+            search_y2 = cy + int(ch * 0.40)
+
+            search_x1 = max(
+                0,
+                search_x1
+            )
+
+            search_y1 = max(
+                0,
+                search_y1
+            )
+
+            search_x2 = min(
+                width,
+                search_x2
+            )
+
+            search_y2 = min(
+                height,
+                search_y2
+            )
+
+            if search_x2 <= search_x1:
+                continue
+
+            if search_y2 <= search_y1:
+                continue
+
+            roi = gray[
+                search_y1:search_y2,
+                search_x1:search_x2
+            ]
+
+            if roi.size == 0:
+                continue
+
+            # =================================================
+            # BLACK TEXT MASK
+            # =================================================
+
+            black = cv2.inRange(
+                roi,
+                0,
+                105
+            )
+
+            # Close small gaps inside letters.
+            black = cv2.morphologyEx(
+                black,
+                cv2.MORPH_CLOSE,
+                cv2.getStructuringElement(
+                    cv2.MORPH_RECT,
+                    (3, 3)
+                ),
+                iterations=1
+            )
+
+            # Connect characters belonging to a username.
+            black_grouped = cv2.dilate(
+                black,
+                cv2.getStructuringElement(
+                    cv2.MORPH_RECT,
+                    (5, 3)
+                ),
+                iterations=1
+            )
+
+            contours, _ = cv2.findContours(
+                black_grouped,
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE
+            )
+
+            candidate_lines = []
+
+            for contour in contours:
+
+                rx, ry, rw, rh = cv2.boundingRect(
+                    contour
+                )
+
+                # Minimum horizontal text size.
+                if rw < 25:
+                    continue
+
+                if rh < 7:
+                    continue
+
+                # Don't select huge UI areas.
+                if rw > cw * 0.65:
+                    continue
+
+                if rh > ch * 0.30:
+                    continue
+
+                aspect = rw / max(
+                    rh,
+                    1
+                )
+
+                # Username is horizontal.
+                if aspect < 2.0:
+                    continue
+
+                # Convert to original-image coordinates.
+                x1 = search_x1 + rx
+                y1 = search_y1 + ry
+                x2 = search_x1 + rx + rw
+                y2 = search_y1 + ry + rh
+
+                actual = gray[
+                    y1:y2,
+                    x1:x2
+                ]
+
+                if actual.size == 0:
+                    continue
+
+                # =================================================
+                # DARK PIXEL RATIO
+                # =================================================
+
+                dark_ratio = float(
+                    np.mean(
+                        actual <= 110
+                    )
+                )
+
+                if dark_ratio < 0.08:
+                    continue
+
+                # =================================================
+                # MEAN DARKNESS
+                # =================================================
+
+                mean_value = float(
+                    np.mean(actual)
+                )
+
+                if mean_value > 180:
+                    continue
+
+                # =================================================
+                # VERTICAL POSITION
+                # =================================================
+
+                relative_y = (
+                    y1 - cy
+                ) / max(
+                    ch,
+                    1
+                )
+
+                # Username must be near top.
+                if relative_y > 0.35:
+                    continue
+
+                candidate_lines.append(
+                    {
+                        "x1": x1,
+                        "y1": y1,
+                        "x2": x2,
+                        "y2": y2,
+                        "dark_ratio": dark_ratio,
+                        "mean": mean_value
+                    }
+                )
+
+            # =================================================
+            # SELECT BEST USERNAME CANDIDATE
+            # =================================================
+
+            if not candidate_lines:
 
                 print(
-                    f"[PROOF] OCR error: {e}"
+                    f"[PROOF] Card {card_index + 1}: "
+                    f"no username candidate."
                 )
 
                 continue
 
-            texts = data.get("text", [])
-            lefts = data.get("left", [])
-            tops = data.get("top", [])
-            widths = data.get("width", [])
-            heights = data.get("height", [])
-            confs = data.get("conf", [])
+            for candidate in candidate_lines:
 
-            for i in range(len(texts)):
-
-                text = str(
-                    texts[i]
-                ).strip()
-
-                if not text:
-                    continue
-
-                if len(text) < 2:
-                    continue
-
-                try:
-
-                    confidence = float(
-                        confs[i]
-                    )
-
-                except Exception:
-
-                    confidence = 0
-
-                # Stronger OCR requirement.
-                if confidence < 35:
-                    continue
-
-                try:
-
-                    x = int(
-                        lefts[i] / scale
-                    )
-
-                    y = int(
-                        tops[i] / scale
-                    )
-
-                    w = int(
-                        widths[i] / scale
-                    )
-
-                    h = int(
-                        heights[i] / scale
-                    )
-
-                except Exception:
-
-                    continue
-
-                if w <= 0 or h <= 0:
-                    continue
-
-                if x < 0 or y < 0:
-                    continue
-
-                if x >= width or y >= height:
-                    continue
-
-                x2 = min(
-                    width,
-                    x + w
-                )
-
-                y2 = min(
-                    height,
-                    y + h
-                )
-
-                w = x2 - x
-                h = y2 - y
-
-                # -------------------------------------------------
-                # LARGE TEXT REQUIREMENTS
-                # -------------------------------------------------
-
-                if w < 35:
-                    continue
-
-                if h < 11:
-                    continue
-
-                if w > width * 0.55:
-                    continue
-
-                if h > height * 0.15:
-                    continue
-
-                aspect = w / max(h, 1)
-
-                if aspect < 1.8:
-                    continue
-
-                # -------------------------------------------------
-                # ACTUAL PIXEL CHECK
-                # -------------------------------------------------
-
-                candidate = gray[
-                    y:y2,
-                    x:x2
-                ]
-
-                if candidate.size == 0:
-                    continue
-
-                dark_ratio = float(
-                    np.mean(
-                        candidate <= 100
-                    )
-                )
-
-                black_ratio = float(
-                    np.mean(
-                        candidate <= 75
-                    )
-                )
-
-                # The target is genuinely black.
-                if dark_ratio < 0.06:
-                    continue
-
-                if black_ratio < 0.025:
-                    continue
-
-                # -------------------------------------------------
-                # LIGHT BACKGROUND CHECK
-                # -------------------------------------------------
-
-                pad = max(
-                    5,
-                    int(h * 0.7)
-                )
-
-                sx1 = max(
-                    0,
-                    x - pad
-                )
-
-                sy1 = max(
-                    0,
-                    y - pad
-                )
-
-                sx2 = min(
-                    width,
-                    x2 + pad
-                )
-
-                sy2 = min(
-                    height,
-                    y2 + pad
-                )
-
-                surrounding = gray[
-                    sy1:sy2,
-                    sx1:sx2
-                ]
-
-                if surrounding.size == 0:
-                    continue
-
-                surrounding_mean = float(
-                    np.mean(
-                        surrounding
-                    )
-                )
-
-                candidate_mean = float(
-                    np.mean(
-                        candidate
-                    )
-                )
-
-                # Target is on a light card/background.
-                if surrounding_mean < 135:
-                    continue
-
-                if (
-                    surrounding_mean
+                rw = (
+                    candidate["x2"]
                     -
-                    candidate_mean
-                    < 35
-                ):
-                    continue
+                    candidate["x1"]
+                )
 
-                # -------------------------------------------------
-                # SCORE
-                # -------------------------------------------------
+                rh = (
+                    candidate["y2"]
+                    -
+                    candidate["y1"]
+                )
 
                 score = 0
 
-                if h >= 16:
-                    score += 3
+                # Wider text.
+                if rw >= 40:
+                    score += 20
 
-                elif h >= 13:
-                    score += 2
+                if rw >= 70:
+                    score += 20
 
-                if w >= 70:
-                    score += 2
+                if rw >= 100:
+                    score += 10
 
-                if w >= 100:
-                    score += 2
+                # Dark/bold text.
+                if candidate["dark_ratio"] >= 0.10:
+                    score += 15
 
-                if aspect >= 3:
-                    score += 1
+                if candidate["dark_ratio"] >= 0.15:
+                    score += 15
 
-                if dark_ratio >= 0.10:
-                    score += 2
+                if candidate["dark_ratio"] >= 0.20:
+                    score += 15
 
-                if black_ratio >= 0.05:
-                    score += 2
+                # Larger text.
+                if rh >= 10:
+                    score += 10
 
-                if confidence >= 60:
-                    score += 2
+                if rh >= 14:
+                    score += 10
 
-                candidates.append(
-                    {
-                        "x1": x,
-                        "y1": y,
-                        "x2": x2,
-                        "y2": y2,
-                        "text": text,
-                        "confidence": confidence,
-                        "dark_ratio": dark_ratio,
-                        "black_ratio": black_ratio,
-                        "score": score
-                    }
-                )
+                candidate["score"] = score
 
-        print(
-            f"[PROOF] OCR candidates: "
-            f"{len(candidates)}"
-        )
-
-        # -------------------------------------------------
-        # REMOVE DUPLICATES
-        # -------------------------------------------------
-
-        unique = []
-
-        for candidate in candidates:
-
-            duplicate = False
-
-            for existing in unique:
-
-                ax1 = candidate["x1"]
-                ay1 = candidate["y1"]
-                ax2 = candidate["x2"]
-                ay2 = candidate["y2"]
-
-                bx1 = existing["x1"]
-                by1 = existing["y1"]
-                bx2 = existing["x2"]
-                by2 = existing["y2"]
-
-                ix1 = max(
-                    ax1,
-                    bx1
-                )
-
-                iy1 = max(
-                    ay1,
-                    by1
-                )
-
-                ix2 = min(
-                    ax2,
-                    bx2
-                )
-
-                iy2 = min(
-                    ay2,
-                    by2
-                )
-
-                if ix2 <= ix1 or iy2 <= iy1:
-                    continue
-
-                intersection = (
-                    (ix2 - ix1)
-                    *
-                    (iy2 - iy1)
-                )
-
-                area_a = (
-                    (ax2 - ax1)
-                    *
-                    (ay2 - ay1)
-                )
-
-                area_b = (
-                    (bx2 - bx1)
-                    *
-                    (by2 - by1)
-                )
-
-                smaller_area = min(
-                    area_a,
-                    area_b
-                )
-
-                overlap_ratio = (
-                    intersection
-                    /
-                    max(smaller_area, 1)
-                )
-
-                if overlap_ratio > 0.50:
-
-                    duplicate = True
-
-                    if (
-                        candidate["score"]
-                        >
-                        existing["score"]
-                    ):
-
-                        existing.update(
-                            candidate
-                        )
-
-                    break
-
-            if not duplicate:
-                unique.append(
-                    candidate
-                )
-
-        candidates = unique
-
-        print(
-            f"[PROOF] Unique candidates: "
-            f"{len(candidates)}"
-        )
-
-        # -------------------------------------------------
-        # SORT BY STRENGTH
-        # -------------------------------------------------
-
-        candidates.sort(
-            key=lambda item: (
-                item["score"],
-                item["confidence"],
-                item["black_ratio"],
-                item["dark_ratio"]
-            ),
-            reverse=True
-        )
-
-        # -------------------------------------------------
-        # SELECT STRONGEST TARGET ONLY
-        # -------------------------------------------------
-
-        selected = None
-
-        if candidates:
-
-            selected = candidates[0]
-
-            print(
-                "[PROOF] Selected target:"
-                f" {selected['text']}"
-                f" | score={selected['score']}"
-                f" | confidence="
-                f"{selected['confidence']:.1f}"
-                f" | box=("
-                f"{selected['x1']},"
-                f"{selected['y1']},"
-                f"{selected['x2']},"
-                f"{selected['y2']})"
+            candidate_lines.sort(
+                key=lambda c: c["score"],
+                reverse=True
             )
 
-        # -------------------------------------------------
-        # CHARACTER LEVEL FALLBACK
-        # -------------------------------------------------
+            best = candidate_lines[0]
 
-        if selected is None:
-
-            print(
-                "[PROOF] Normal OCR failed."
-                " Trying character OCR..."
-            )
-
-            try:
-
-                boxes = pytesseract.image_to_boxes(
-                    enlarged,
-                    config="--oem 3 --psm 11"
-                )
-
-                chars = []
-
-                for line in boxes.splitlines():
-
-                    parts = line.split()
-
-                    if len(parts) < 6:
-                        continue
-
-                    char = parts[0]
-
-                    try:
-
-                        bx1 = int(
-                            int(parts[1]) / scale
-                        )
-
-                        by_bottom = int(
-                            int(parts[2]) / scale
-                        )
-
-                        bx2 = int(
-                            int(parts[3]) / scale
-                        )
-
-                        by_top = int(
-                            int(parts[4]) / scale
-                        )
-
-                    except Exception:
-
-                        continue
-
-                    # Tesseract coordinates are bottom-up.
-                    cy1 = (
-                        height
-                        -
-                        by_top
-                    )
-
-                    cy2 = (
-                        height
-                        -
-                        by_bottom
-                    )
-
-                    cw = bx2 - bx1
-                    ch = cy2 - cy1
-
-                    if cw < 2:
-                        continue
-
-                    if ch < 7:
-                        continue
-
-                    chars.append(
-                        (
-                            bx1,
-                            cy1,
-                            bx2,
-                            cy2,
-                            char
-                        )
-                    )
-
-                chars.sort(
-                    key=lambda item: (
-                        item[1],
-                        item[0]
-                    )
-                )
-
-                lines = []
-
-                for char in chars:
-
-                    cx = (
-                        char[0]
-                        +
-                        char[2]
-                    ) / 2
-
-                    cy = (
-                        char[1]
-                        +
-                        char[3]
-                    ) / 2
-
-                    placed = False
-
-                    for line in lines:
-
-                        average_y = np.mean(
-                            [
-                                (
-                                    c[1]
-                                    +
-                                    c[3]
-                                ) / 2
-                                for c in line
-                            ]
-                        )
-
-                        if abs(
-                            cy - average_y
-                        ) <= 10:
-
-                            line.append(
-                                char
-                            )
-
-                            placed = True
-                            break
-
-                    if not placed:
-
-                        lines.append(
-                            [char]
-                        )
-
-                best = None
-                best_score = 0
-
-                for line in lines:
-
-                    if len(line) < 4:
-                        continue
-
-                    line.sort(
-                        key=lambda item: item[0]
-                    )
-
-                    lx1 = min(
-                        c[0]
-                        for c in line
-                    )
-
-                    ly1 = min(
-                        c[1]
-                        for c in line
-                    )
-
-                    lx2 = max(
-                        c[2]
-                        for c in line
-                    )
-
-                    ly2 = max(
-                        c[3]
-                        for c in line
-                    )
-
-                    lw = lx2 - lx1
-                    lh = ly2 - ly1
-
-                    if lw < 50:
-                        continue
-
-                    if lh < 12:
-                        continue
-
-                    if lw / max(lh, 1) < 2:
-                        continue
-
-                    candidate = gray[
-                        ly1:ly2,
-                        lx1:lx2
-                    ]
-
-                    if candidate.size == 0:
-                        continue
-
-                    dark_ratio = float(
-                        np.mean(
-                            candidate <= 100
-                        )
-                    )
-
-                    black_ratio = float(
-                        np.mean(
-                            candidate <= 75
-                        )
-                    )
-
-                    if dark_ratio < 0.07:
-                        continue
-
-                    if black_ratio < 0.025:
-                        continue
-
-                    pad = 6
-
-                    sx1 = max(
-                        0,
-                        lx1 - pad
-                    )
-
-                    sy1 = max(
-                        0,
-                        ly1 - pad
-                    )
-
-                    sx2 = min(
-                        width,
-                        lx2 + pad
-                    )
-
-                    sy2 = min(
-                        height,
-                        ly2 + pad
-                    )
-
-                    surrounding = gray[
-                        sy1:sy2,
-                        sx1:sx2
-                    ]
-
-                    if surrounding.size == 0:
-                        continue
-
-                    surrounding_mean = float(
-                        np.mean(
-                            surrounding
-                        )
-                    )
-
-                    candidate_mean = float(
-                        np.mean(
-                            candidate
-                        )
-                    )
-
-                    if surrounding_mean < 135:
-                        continue
-
-                    if (
-                        surrounding_mean
-                        -
-                        candidate_mean
-                        < 35
-                    ):
-                        continue
-
-                    score = (
-                        len(line) * 2
-                        +
-                        int(lw / 30)
-                        +
-                        int(lh / 5)
-                    )
-
-                    if dark_ratio >= 0.12:
-                        score += 3
-
-                    if black_ratio >= 0.05:
-                        score += 3
-
-                    if score > best_score:
-
-                        best_score = score
-
-                        best = {
-                            "x1": lx1,
-                            "y1": ly1,
-                            "x2": lx2,
-                            "y2": ly2,
-                            "text": "",
-                            "score": score
-                        }
-
-                if best is not None:
-
-                    selected = best
-
-                    print(
-                        "[PROOF] Character OCR selected:"
-                        f" box=("
-                        f"{best['x1']},"
-                        f"{best['y1']},"
-                        f"{best['x2']},"
-                        f"{best['y2']})"
-                    )
-
-            except Exception as e:
+            if best["score"] < 30:
 
                 print(
-                    f"[PROOF] Character OCR error: {e}"
+                    f"[PROOF] Card {card_index + 1}: "
+                    f"candidate too weak."
                 )
 
-        # -------------------------------------------------
-        # NO TARGET
-        # -------------------------------------------------
+                continue
 
-        if selected is None:
-
-            print(
-                "[PROOF] No target text found."
+            username_regions.append(
+                best
             )
 
-            # NEVER mass blur the proof.
+            print(
+                f"[PROOF] Card {card_index + 1}: "
+                f"username found at "
+                f"({best['x1']}, {best['y1']}) -> "
+                f"({best['x2']}, {best['y2']}) "
+                f"score={best['score']}"
+            )
+
+        # =================================================
+        # STEP 3
+        # NO USERNAMES
+        # =================================================
+
+        if not username_regions:
+
+            print(
+                "[PROOF] No usernames detected."
+            )
+
             return image_data
 
-        # -------------------------------------------------
-        # TARGET BOX
-        # -------------------------------------------------
-
-        x1 = int(
-            selected["x1"]
-        )
-
-        y1 = int(
-            selected["y1"]
-        )
-
-        x2 = int(
-            selected["x2"]
-        )
-
-        y2 = int(
-            selected["y2"]
-        )
-
-        rw = x2 - x1
-        rh = y2 - y1
-
-        if rw <= 0 or rh <= 0:
-            return image_data
-
-        # -------------------------------------------------
-        # VERY TIGHT PADDING
-        # -------------------------------------------------
-
-        # Only enough to cover the username.
-        pad_x = max(
-            3,
-            int(rw * 0.025)
-        )
-
-        pad_y = max(
-            3,
-            int(rh * 0.20)
-        )
-
-        bx1 = max(
-            0,
-            x1 - pad_x
-        )
-
-        by1 = max(
-            0,
-            y1 - pad_y
-        )
-
-        bx2 = min(
-            width,
-            x2 + pad_x
-        )
-
-        by2 = min(
-            height,
-            y2 + pad_y
-        )
-
-        # -------------------------------------------------
-        # MASK
-        # -------------------------------------------------
+        # =================================================
+        # STEP 4
+        # CREATE MASK
+        # =================================================
 
         mask = np.zeros(
             (height, width),
             dtype=np.uint8
         )
 
-        cv2.rectangle(
-            mask,
-            (bx1, by1),
-            (bx2, by2),
-            255,
-            -1
-        )
+        for region in username_regions:
 
-        # Tiny expansion for antialiased edges.
+            x1 = int(
+                region["x1"]
+            )
+
+            y1 = int(
+                region["y1"]
+            )
+
+            x2 = int(
+                region["x2"]
+            )
+
+            y2 = int(
+                region["y2"]
+            )
+
+            rw = x2 - x1
+            rh = y2 - y1
+
+            # =================================================
+            # TIGHT PADDING
+            # =================================================
+            #
+            # Keep the blur away from date/time and buttons.
+            # =================================================
+
+            pad_x = max(
+                5,
+                int(rw * 0.07)
+            )
+
+            pad_y = max(
+                4,
+                int(rh * 0.40)
+            )
+
+            bx1 = max(
+                0,
+                x1 - pad_x
+            )
+
+            by1 = max(
+                0,
+                y1 - pad_y
+            )
+
+            bx2 = min(
+                width,
+                x2 + pad_x
+            )
+
+            by2 = min(
+                height,
+                y2 + pad_y
+            )
+
+            cv2.rectangle(
+                mask,
+                (bx1, by1),
+                (bx2, by2),
+                255,
+                -1
+            )
+
+            print(
+                f"[PROOF] Mask region: "
+                f"{bx1},{by1} -> {bx2},{by2}"
+            )
+
+        # =================================================
+        # STEP 5
+        # SMALL MASK EXPANSION
+        # =================================================
+
         mask = cv2.dilate(
             mask,
             cv2.getStructuringElement(
@@ -1073,15 +773,21 @@ def blur_proof_text(
             iterations=1
         )
 
-        # -------------------------------------------------
-        # BLUR
-        # -------------------------------------------------
+        # =================================================
+        # STEP 6
+        # STRONG BLUR
+        # =================================================
 
         blurred = original.filter(
             ImageFilter.GaussianBlur(
-                radius=25
+                radius=18
             )
         )
+
+        # =================================================
+        # STEP 7
+        # SOFT EDGES
+        # =================================================
 
         mask_image = Image.fromarray(
             mask,
@@ -1090,9 +796,14 @@ def blur_proof_text(
 
         mask_image = mask_image.filter(
             ImageFilter.GaussianBlur(
-                radius=0.8
+                radius=1
             )
         )
+
+        # =================================================
+        # STEP 8
+        # APPLY BLUR
+        # =================================================
 
         result = Image.composite(
             blurred,
@@ -1100,9 +811,27 @@ def blur_proof_text(
             mask_image
         )
 
-        # -------------------------------------------------
-        # SAVE
-        # -------------------------------------------------
+        # =================================================
+        # STEP 9
+        # SECOND BLUR PASS
+        # =================================================
+
+        second_blur = result.filter(
+            ImageFilter.GaussianBlur(
+                radius=7
+            )
+        )
+
+        result = Image.composite(
+            second_blur,
+            result,
+            mask_image
+        )
+
+        # =================================================
+        # STEP 10
+        # OUTPUT
+        # =================================================
 
         output = io.BytesIO()
 
@@ -1114,7 +843,8 @@ def blur_proof_text(
         output.seek(0)
 
         print(
-            "[PROOF] Target text blurred successfully."
+            f"[PROOF] Successfully blurred "
+            f"{len(username_regions)} username(s)."
         )
 
         return output.getvalue()
