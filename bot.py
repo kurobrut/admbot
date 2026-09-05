@@ -2803,8 +2803,194 @@ async def status(
 
 
 # =========================================================
-# SAY
+# SAY - MULTIPLE ROLE SELECT
 # =========================================================
+
+class SayRoleSelect(discord.ui.Select):
+
+    def __init__(self, roles, selected_roles):
+
+        self.roles = roles
+        self.selected_roles = selected_roles
+
+        options = []
+
+        for role in roles[:25]:
+
+            options.append(
+                discord.SelectOption(
+                    label=role.name[:100],
+                    value=str(role.id),
+                    description=f"Mention {role.name}"[:100]
+                )
+            )
+
+        super().__init__(
+            placeholder="♡ Choose the role(s) to mention...",
+            min_values=0,
+            max_values=len(options),
+            options=options
+        )
+
+    async def callback(
+        self,
+        interaction: discord.Interaction
+    ):
+
+        # Remove roles belonging to this dropdown
+        role_ids = {
+            role.id
+            for role in self.roles
+        }
+
+        self.selected_roles[:] = [
+            role
+            for role in self.selected_roles
+            if role.id not in role_ids
+        ]
+
+        # Add newly selected roles
+        for value in self.values:
+
+            role = interaction.guild.get_role(
+                int(value)
+            )
+
+            if role:
+                self.selected_roles.append(role)
+
+        await interaction.response.defer()
+
+
+class SayRoleView(discord.ui.View):
+
+    def __init__(
+        self,
+        interaction,
+        channel,
+        message
+    ):
+
+        super().__init__(timeout=120)
+
+        self.original_user = interaction.user
+        self.channel = channel
+        self.message = message
+
+        self.selected_roles = []
+
+        guild = interaction.guild
+        me = guild.me
+
+        # Only roles the bot can actually mention/manage
+        roles = [
+            role
+            for role in guild.roles
+            if not role.is_default()
+            and (not me or role < me.top_role)
+        ]
+
+        # Discord allows a maximum of 25 options
+        # per select menu.
+        for i in range(0, len(roles), 25):
+
+            chunk = roles[i:i + 25]
+
+            self.add_item(
+                SayRoleSelect(
+                    chunk,
+                    self.selected_roles
+                )
+            )
+
+            # Discord views support max 5 action rows.
+            if len(self.children) >= 5:
+                break
+
+        # Send button
+        self.add_item(
+            SaySendButton(self)
+        )
+
+
+class SaySendButton(discord.ui.Button):
+
+    def __init__(self, view):
+
+        self.say_view = view
+
+        super().__init__(
+            label="Send Announcement ♡",
+            style=discord.ButtonStyle.success,
+            emoji="📢",
+            row=4
+        )
+
+    async def callback(
+        self,
+        interaction: discord.Interaction
+    ):
+
+        view = self.say_view
+
+        if interaction.user.id != view.original_user.id:
+
+            return await interaction.response.send_message(
+                "❌ Only the person who used `/say` can use this.",
+                ephemeral=True
+            )
+
+        roles = view.selected_roles
+
+        embed = discord.Embed(
+
+            title="୨୧・♡ 𝒶𝓃𝓃𝑜𝓊𝓃𝒸𝑒𝓂𝑒𝓃𝓉 ♡・୨୧",
+
+            description=(
+                "╭・₊˚⊹ **hello everyone!** ⊹˚₊・╮\n\n"
+                f"{view.message}\n\n"
+                "╰・₊˚⊹ ♡ ⊹˚₊・╯"
+            ),
+
+            color=PINK
+        )
+
+        embed.set_footer(
+            text="♡ thank you for being part of our community ♡"
+        )
+
+        embed.timestamp = discord.utils.utcnow()
+
+        await view.channel.send(
+
+            content=(
+                " ".join(
+                    role.mention
+                    for role in roles
+                )
+                if roles
+                else None
+            ),
+
+            embed=embed,
+
+            allowed_mentions=discord.AllowedMentions(
+                roles=True
+            )
+        )
+
+        await interaction.response.edit_message(
+
+            content=(
+                f"♡ Announcement sent to "
+                f"{view.channel.mention}."
+            ),
+
+            view=None
+        )
+
+        view.stop()
+
 
 @bot.tree.command(
     name="say",
@@ -2813,17 +2999,7 @@ async def status(
 async def say(
     interaction: discord.Interaction,
     channel: discord.TextChannel,
-    message: str,
-    role1: discord.Role | None = None,
-    role2: discord.Role | None = None,
-    role3: discord.Role | None = None,
-    role4: discord.Role | None = None,
-    role5: discord.Role | None = None,
-    role6: discord.Role | None = None,
-    role7: discord.Role | None = None,
-    role8: discord.Role | None = None,
-    role9: discord.Role | None = None,
-    role10: discord.Role | None = None
+    message: str
 ):
 
     if not is_staff(interaction):
@@ -2835,54 +3011,53 @@ async def say(
             ephemeral=True
         )
 
-    roles = [
-        role for role in (
-            role1,
-            role2,
-            role3,
-            role4,
-            role5,
-            role6,
-            role7,
-            role8,
-            role9,
-            role10
+    guild = interaction.guild
+
+    if not guild:
+
+        return await interaction.response.send_message(
+
+            "❌ This command can only be used in a server.",
+
+            ephemeral=True
         )
-        if role is not None
+
+    me = guild.me
+
+    manageable_roles = [
+        role
+        for role in guild.roles
+        if not role.is_default()
+        and (not me or role < me.top_role)
     ]
 
-    embed = discord.Embed(
+    if len(manageable_roles) > 125:
 
-        title="𝘢𝘯𝘯𝘰𝘶𝘯𝘤𝘦𝘮𝘦𝘯𝘵",
+        return await interaction.response.send_message(
 
-        description=message,
+            "❌ This server has too many roles for the "
+            "multi-select menu. Discord allows a maximum "
+            "of 125 select options in one view.",
 
-        color=PINK
-    )
-
-    await channel.send(
-
-        content=(
-            " ".join(role.mention for role in roles)
-            if roles
-            else None
-        ),
-
-        embed=embed,
-
-        allowed_mentions=discord.AllowedMentions(
-            roles=True
+            ephemeral=True
         )
+
+    view = SayRoleView(
+        interaction,
+        channel,
+        message
     )
 
     await interaction.response.send_message(
 
-        f"♡ Announcement sent to "
-        f"{channel.mention}.",
+        "୨୧・♡ **Choose the role(s) to mention** ♡・୨୧\n\n"
+        "You can select multiple roles, then press "
+        "**Send Announcement ♡**.",
+
+        view=view,
 
         ephemeral=True
     )
-
 
 # =========================================================
 # WARN
