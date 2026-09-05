@@ -34,28 +34,12 @@ def health():
 
 
 def run_web():
-    port = int(os.environ.get("PORT", 8080))
-
-    app.run(
-        host="0.0.0.0",
-        port=port,
-        debug=False,
-        use_reloader=False
-    )
+    port = int(os.getenv("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
 
 
 def keep_alive():
-    server = Thread(
-        target=run_web,
-        daemon=True
-    )
-
-    server.start()
-
-    print(
-        f"Keep-alive web server started on port "
-        f"{os.environ.get('PORT', '8080')}"
-    )
+    Thread(target=run_web, daemon=True).start()
 
 
 # =========================================================
@@ -65,107 +49,44 @@ def keep_alive():
 CONFIG_FILE = "config.json"
 
 DEFAULT_CONFIG = {
-    "panel_channel_id": int(
-        os.getenv("PANEL_CHANNEL_ID", 0)
-    ) or None,
-
-    "ticket_category_id": int(
-        os.getenv("TICKET_CATEGORY_ID", 0)
-    ) or None,
-
-    "vouch_channel_id": int(
-        os.getenv("VOUCH_CHANNEL_ID", 0)
-    ) or None,
-
-    "status_channel_id": int(
-        os.getenv("STATUS_CHANNEL_ID", 0)
-    ) or None,
-
+    "panel_channel_id": int(os.getenv("PANEL_CHANNEL_ID", 0)) or None,
+    "ticket_category_id": int(os.getenv("TICKET_CATEGORY_ID", 0)) or None,
+    "vouch_channel_id": int(os.getenv("VOUCH_CHANNEL_ID", 0)) or None,
+    "status_channel_id": int(os.getenv("STATUS_CHANNEL_ID", 0)) or None,
     "welcome_goodbye_channel_id": int(
         os.getenv("WELCOME_GOODBYE_CHANNEL_ID", 0)
     ) or None,
-
-    "proof_channel_id": int(
-        os.getenv("PROOF_CHANNEL_ID", 0)
-    ) or None,
-
-    "staff_role_id": int(
-        os.getenv("STAFF_ROLE_ID", 0)
-    ) or None,
-
+    "proof_channel_id": int(os.getenv("PROOF_CHANNEL_ID", 0)) or None,
+    "staff_role_id": int(os.getenv("STAFF_ROLE_ID", 0)) or None,
     "customer_role_id": int(
-        os.getenv(
-            "CUSTOMER_ROLE_ID",
-            1545438540362555463
-        )
-    ) or 1545438540362555463
+        os.getenv("CUSTOMER_ROLE_ID", 1545438540362555463)
+    ) or 1545438540362555463,
+    "blur_everything": os.getenv(
+        "BLUR_EVERYTHING", "true"
+    ).lower() == "true"
 }
 
 
-def save_config(data):
-    try:
-        with open(
-            CONFIG_FILE,
-            "w",
-            encoding="utf-8"
-        ) as file:
-
-            json.dump(
-                data,
-                file,
-                indent=2
-            )
-
-    except OSError as error:
-
-        print(
-            f"Could not save config: {error}"
-        )
+def save_config():
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=4)
 
 
 def load_config():
-
     if not os.path.exists(CONFIG_FILE):
-
-        save_config(
-            DEFAULT_CONFIG.copy()
-        )
-
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_CONFIG, f, indent=4)
         return DEFAULT_CONFIG.copy()
 
     try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
 
-        with open(
-            CONFIG_FILE,
-            "r",
-            encoding="utf-8"
-        ) as file:
+        merged = DEFAULT_CONFIG.copy()
+        merged.update(loaded)
+        return merged
 
-            data = json.load(file)
-
-        changed = False
-
-        for key, value in DEFAULT_CONFIG.items():
-
-            if key not in data:
-
-                data[key] = value
-                changed = True
-
-        if changed:
-            save_config(data)
-
-        return data
-
-    except (
-        json.JSONDecodeError,
-        OSError
-    ):
-
-        save_config(
-            DEFAULT_CONFIG.copy()
-        )
-
+    except Exception:
         return DEFAULT_CONFIG.copy()
 
 
@@ -173,15 +94,13 @@ config = load_config()
 
 
 # =========================================================
-# DISCORD INTENTS
+# DISCORD
 # =========================================================
 
 intents = discord.Intents.default()
-
 intents.guilds = True
 intents.members = True
 intents.message_content = True
-
 
 bot = commands.Bot(
     command_prefix="!",
@@ -193,45 +112,21 @@ bot = commands.Bot(
 # COLORS
 # =========================================================
 
-PINK = discord.Color.from_rgb(
-    255,
-    143,
-    194
-)
-
-GREEN = discord.Color.from_rgb(
-    87,
-    242,
-    135
-)
-
-RED = discord.Color.from_rgb(
-    237,
-    66,
-    69
-)
-
-GRAY = discord.Color.from_rgb(
-    149,
-    165,
-    166
-)
+PINK = (255, 143, 194)
+GREEN = (87, 242, 135)
+RED = (237, 66, 69)
+GRAY = (149, 165, 166)
 
 
 # =========================================================
 # EMBED HELPER
 # =========================================================
 
-def styled_embed(
-    title,
-    description,
-    color=PINK
-):
-
+def styled_embed(title, description="", color=PINK):
     embed = discord.Embed(
         title=title,
         description=description,
-        color=color
+        color=discord.Color.from_rgb(*color)
     )
 
     embed.set_footer(
@@ -242,600 +137,676 @@ def styled_embed(
 
 
 # =========================================================
-# ADVANCED PROOF TEXT BLUR
+# STAFF CHECK
 # =========================================================
 
-def blur_region(
-    image,
-    x1,
-    y1,
-    x2,
-    y2,
-    radius=7
-):
-    """
-    Blur one individual region without creating
-    a giant rectangular blur across the screenshot.
-    """
+def is_staff(interaction: discord.Interaction):
+    if interaction.guild is None:
+        return False
 
-    width, height = image.size
-
-    x1 = max(
-        0,
-        min(width, int(x1))
-    )
-
-    y1 = max(
-        0,
-        min(height, int(y1))
-    )
-
-    x2 = max(
-        0,
-        min(width, int(x2))
-    )
-
-    y2 = max(
-        0,
-        min(height, int(y2))
-    )
-
-    if x2 <= x1 or y2 <= y1:
-        return
-
-    crop = image.crop(
-        (
-            x1,
-            y1,
-            x2,
-            y2
-        )
-    )
-
-    crop = crop.filter(
-        ImageFilter.GaussianBlur(
-            radius=radius
-        )
-    )
-
-    image.paste(
-        crop,
-        (
-            x1,
-            y1
-        )
-    )
-
-
-def is_date_or_time(text):
-    """
-    Prevent dates/times from being blurred.
-    """
-
-    text_lower = text.lower().strip()
-
-    if not text_lower:
+    if interaction.user.guild_permissions.administrator:
         return True
 
-    # Common date/time characters
-    if ":" in text_lower:
-        return True
+    staff_role_id = config.get("staff_role_id")
 
-    if "/" in text_lower:
-        return True
+    if staff_role_id:
+        role = interaction.guild.get_role(int(staff_role_id))
 
-    # Month names
-    months = [
-        "jan",
-        "january",
-        "feb",
-        "february",
-        "mar",
-        "march",
-        "apr",
-        "april",
-        "may",
-        "jun",
-        "june",
-        "jul",
-        "july",
-        "aug",
-        "august",
-        "sep",
-        "sept",
-        "september",
-        "oct",
-        "october",
-        "nov",
-        "november",
-        "dec",
-        "december"
-    ]
-
-    for month in months:
-
-        if month in text_lower:
+        if role and role in interaction.user.roles:
             return True
 
-    # Pure numbers are usually dates
-    if text_lower.replace(
-        ",",
-        ""
-    ).replace(
-        ".",
-        ""
-    ).isdigit():
-
-        return True
-
-    return False
+    return interaction.user.guild_permissions.manage_channels
 
 
-def is_button_text(text):
-    """
-    Don't blur the large View / Report buttons.
-    """
-
-    text_lower = text.lower().strip()
-
-    ignored = {
-        "view",
-        "report",
-        "refresh",
-        "buy",
-        "cancel",
-        "confirm",
-        "close"
-    }
-
-    return text_lower in ignored
-
-
-def calculate_dark_ratio(
-    gray,
-    x1,
-    y1,
-    x2,
-    y2
-):
-    """
-    Calculates how much dark text exists inside
-    an OCR region.
-    """
-
-    h, w = gray.shape
-
-    x1 = max(
-        0,
-        min(w, int(x1))
-    )
-
-    y1 = max(
-        0,
-        min(h, int(y1))
-    )
-
-    x2 = max(
-        0,
-        min(w, int(x2))
-    )
-
-    y2 = max(
-        0,
-        min(h, int(y2))
-    )
-
-    if x2 <= x1 or y2 <= y1:
-        return 0
-
-    roi = gray[
-        y1:y2,
-        x1:x2
-    ]
-
-    if roi.size == 0:
-        return 0
-
-    dark_pixels = np.sum(
-        roi < 145
-    )
-
-    return dark_pixels / roi.size
-
+# =========================================================
+# STRONG PROOF IMAGE BLUR SYSTEM
+# =========================================================
 
 def blur_proof_text(
-    image_data: bytes
+    image_data: bytes,
+    blur_everything: bool = True
 ) -> bytes:
-
     """
-    Scans the ENTIRE screenshot using OCR.
+    CARD-AWARE USERNAME BLUR
 
-    The system:
-      1. Finds all text.
-      2. Measures each text region.
-      3. Detects dark/thick text.
-      4. Ignores dates/times.
-      5. Ignores View/Report buttons.
-      6. Blurs the detected name/text regions individually.
-
-    There is no large solid blur rectangle.
+    Detects each light proof card independently, including cards that
+    are only partially visible at the bottom of a screenshot.  The
+    blur is restricted to the first text line of each card, which is
+    the username/name area, so dates, times, View/Report buttons and
+    the inventory on the right are not touched.
     """
-
     try:
-
-        # =================================================
-        # LOAD IMAGE
-        # =================================================
-
-        original = Image.open(
-            io.BytesIO(image_data)
-        ).convert("RGB")
-
+        original = Image.open(io.BytesIO(image_data)).convert("RGB")
         width, height = original.size
 
-        # OpenCV image
-        cv_image = cv2.cvtColor(
-            np.array(original),
-            cv2.COLOR_RGB2BGR
-        )
-
-        gray = cv2.cvtColor(
-            cv_image,
-            cv2.COLOR_BGR2GRAY
-        )
-
-        # =================================================
-        # UPSCALE FOR OCR
-        # =================================================
-
-        scale = 2
-
-        enlarged = cv2.resize(
-            gray,
-            None,
-            fx=scale,
-            fy=scale,
-            interpolation=cv2.INTER_CUBIC
-        )
-
-        # =================================================
-        # OCR
-        # =================================================
-
-        try:
-
-            ocr_data = pytesseract.image_to_data(
-                enlarged,
-                config="--oem 3 --psm 11",
-                output_type=pytesseract.Output.DICT
-            )
-
-        except Exception as error:
-
-            print(
-                "Tesseract error:",
-                error
-            )
-
+        if width <= 0 or height <= 0:
             return image_data
 
-        # =================================================
-        # OUTPUT IMAGE
-        # =================================================
+        rgb = np.asarray(original)
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
 
-        result = original.copy()
+        # =========================================================
+        # 1. DETECT EVERY LIGHT CARD
+        # =========================================================
+        #
+        # The proof cards are large connected light regions.  Using
+        # connected components instead of one global contour prevents
+        # several cards from being merged together.
+        #
+        bright = cv2.inRange(gray, 185, 255)
 
-        # =================================================
-        # COLLECT OCR REGIONS
-        # =================================================
-
-        regions = []
-
-        total_words = len(
-            ocr_data["text"]
+        # Only the left part can contain the proof cards.  This keeps
+        # the inventory/grid on the right out of card detection.
+        left_limit = min(
+            width,
+            max(400, int(width * 0.62))
         )
 
-        for i in range(
-            total_words
-        ):
+        card_search = np.zeros_like(bright)
+        card_search[:, :left_limit] = bright[:, :left_limit]
 
-            text = (
-                ocr_data["text"][i]
-                .strip()
+        # Very small gaps from text/rounded corners are filled, while
+        # separate cards remain separate because their vertical gap is
+        # much larger than this kernel.
+        card_search = cv2.morphologyEx(
+            card_search,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(
+                cv2.MORPH_RECT,
+                (9, 5)
+            ),
+            iterations=1
+        )
+
+        num_labels, labels, stats, _ = (
+            cv2.connectedComponentsWithStats(
+                card_search,
+                connectivity=8
             )
+        )
 
-            if not text:
+        card_regions = []
+
+        min_card_width = max(
+            220,
+            int(width * 0.40)
+        )
+
+        for label in range(1, num_labels):
+            x, y, w, h, area = stats[label]
+
+            # Ignore inventory cells, icons and small UI elements.
+            if w < min_card_width:
                 continue
 
-            try:
+            if h < 45:
+                continue
 
-                confidence = float(
-                    ocr_data["conf"][i]
+            if x > int(width * 0.55):
+                continue
+
+            # A card is wide and occupies a substantial fraction of
+            # its bounding rectangle with light pixels.
+            fill_ratio = area / float(max(1, w * h))
+
+            if fill_ratio < 0.45:
+                continue
+
+            x1 = max(0, int(x))
+            y1 = max(0, int(y))
+            x2 = min(width - 1, int(x + w - 1))
+            y2 = min(height - 1, int(y + h - 1))
+
+            card_regions.append(
+                (x1, y1, x2, y2)
+            )
+
+        # ---------------------------------------------------------
+        # Fallback: scan horizontal light bands if connected
+        # components did not find the cards.
+        # ---------------------------------------------------------
+        if not card_regions:
+            row_profile = (
+                np.count_nonzero(
+                    bright[:, :left_limit],
+                    axis=1
+                ) / float(left_limit)
+            )
+
+            active = row_profile >= 0.55
+            groups = []
+            group_start = None
+
+            for y, is_active in enumerate(active):
+                if is_active and group_start is None:
+                    group_start = y
+
+                elif not is_active and group_start is not None:
+                    if y - group_start >= 45:
+                        groups.append(
+                            (group_start, y - 1)
+                        )
+                    group_start = None
+
+            if group_start is not None:
+                if height - group_start >= 45:
+                    groups.append(
+                        (group_start, height - 1)
+                    )
+
+            for y1, y2 in groups:
+                card_regions.append(
+                    (
+                        0,
+                        y1,
+                        min(width - 1, left_limit - 1),
+                        y2
+                    )
                 )
 
-            except (
-                ValueError,
-                TypeError
-            ):
-
-                confidence = 0
-
-            if confidence < 20:
-                continue
-
-            # OCR coordinates are on enlarged image
-            x = int(
-                ocr_data["left"][i]
-                / scale
+        # Remove overlapping duplicates and sort top-to-bottom.
+        def rect_area(r):
+            return max(
+                0, r[2] - r[0] + 1
+            ) * max(
+                0, r[3] - r[1] + 1
             )
 
-            y = int(
-                ocr_data["top"][i]
-                / scale
+        def rect_intersection(a, b):
+            ix1 = max(a[0], b[0])
+            iy1 = max(a[1], b[1])
+            ix2 = min(a[2], b[2])
+            iy2 = min(a[3], b[3])
+
+            if ix2 < ix1 or iy2 < iy1:
+                return 0
+
+            return (
+                (ix2 - ix1 + 1)
+                * (iy2 - iy1 + 1)
             )
 
-            w = int(
-                ocr_data["width"][i]
-                / scale
-            )
-
-            h = int(
-                ocr_data["height"][i]
-                / scale
-            )
-
-            if w < 3 or h < 3:
-                continue
-
-            x1 = max(
-                0,
-                x
-            )
-
-            y1 = max(
-                0,
-                y
-            )
-
-            x2 = min(
-                width,
-                x + w
-            )
-
-            y2 = min(
-                height,
-                y + h
-            )
-
-            if x2 <= x1 or y2 <= y1:
-                continue
-
-            regions.append(
-                {
-                    "text": text,
-                    "confidence": confidence,
-                    "x1": x1,
-                    "y1": y1,
-                    "x2": x2,
-                    "y2": y2,
-                    "width": x2 - x1,
-                    "height": y2 - y1
-                }
-            )
-
-        print(
-            f"Proof OCR detected "
-            f"{len(regions)} text regions."
+        card_regions.sort(
+            key=rect_area,
+            reverse=True
         )
 
-        # =================================================
-        # PROCESS EACH REGION
-        # =================================================
+        unique_cards = []
 
-        blur_count = 0
+        for card in card_regions:
+            duplicate = False
 
-        for region in regions:
+            for existing in unique_cards:
+                inter = rect_intersection(
+                    card,
+                    existing
+                )
 
-            text = region["text"]
+                if inter <= 0:
+                    continue
 
-            x1 = region["x1"]
-            y1 = region["y1"]
-            x2 = region["x2"]
-            y2 = region["y2"]
+                smaller = min(
+                    rect_area(card),
+                    rect_area(existing)
+                )
 
-            region_width = (
-                region["width"]
-            )
+                if smaller and (
+                    inter / smaller >= 0.70
+                ):
+                    duplicate = True
+                    break
 
-            region_height = (
-                region["height"]
-            )
+            if not duplicate:
+                unique_cards.append(card)
 
-            # ---------------------------------------------
-            # IGNORE DATE / TIME
-            # ---------------------------------------------
+        unique_cards.sort(
+            key=lambda r: (r[1], r[0])
+        )
 
-            if is_date_or_time(text):
+        print(
+            f"[PROOF] Detected {len(unique_cards)} "
+            f"proof cards"
+        )
+
+        if not unique_cards:
+            print("[PROOF] No proof cards found.")
+            return image_data
+
+        # =========================================================
+        # 2. FIND THE USERNAME IN EVERY CARD
+        # =========================================================
+        mask = np.zeros(
+            (height, width),
+            dtype=np.uint8
+        )
+
+        detected_names = 0
+
+        for index, (cx1, cy1, cx2, cy2) in enumerate(
+            unique_cards,
+            start=1
+        ):
+            card_w = cx2 - cx1 + 1
+            card_h = cy2 - cy1 + 1
+
+            if card_w < 150 or card_h < 35:
                 continue
 
-            # ---------------------------------------------
-            # IGNORE BUTTON TEXT
-            # ---------------------------------------------
-
-            if is_button_text(text):
-                continue
-
-            # ---------------------------------------------
-            # IGNORE VERY SMALL TEXT
-            # ---------------------------------------------
-
-            if region_height < 8:
-                continue
-
-            # ---------------------------------------------
-            # DARKNESS ANALYSIS
-            # ---------------------------------------------
-
-            dark_ratio = calculate_dark_ratio(
-                gray,
-                x1,
-                y1,
-                x2,
-                y2
-            )
-
-            # ---------------------------------------------
-            # MORPHOLOGICAL THICKNESS
-            # ---------------------------------------------
-
-            sx1 = max(
+            # The username is the FIRST text row inside the card.
+            # Keep the scan left of the time and above the date.
+            ux1 = max(
                 0,
-                int(x1 * scale)
+                cx1 + 9
             )
 
-            sy1 = max(
+            ux2 = min(
+                width - 1,
+                cx1 + int(card_w * 0.68)
+            )
+
+            # Start just below the rounded top edge.
+            uy1 = max(
                 0,
-                int(y1 * scale)
+                cy1 + 7
             )
 
-            sx2 = min(
-                enlarged.shape[1],
-                int(x2 * scale)
+            # Do NOT reach the date row.  For normal cards this is
+            # about the first 40-44 pixels.
+            # IMPORTANT: use a fixed scan height based on the
+            # normal card layout, not card_h.  A partially visible
+            # bottom card has a small visible height, but its username
+            # is still in the same vertical position from the card top.
+            username_scan_height = 39
+
+            uy2 = min(
+                height - 1,
+                cy1 + username_scan_height
             )
 
-            sy2 = min(
-                enlarged.shape[0],
-                int(y2 * scale)
-            )
+            if ux2 <= ux1 or uy2 <= uy1:
+                continue
 
-            roi = enlarged[
-                sy1:sy2,
-                sx1:sx2
+            roi = gray[
+                uy1:uy2 + 1,
+                ux1:ux2 + 1
             ]
 
-            if roi.size == 0:
-                continue
-
-            binary = cv2.threshold(
+            # =====================================================
+            # 3. DARK/BOLD PIXEL DETECTION
+            # =====================================================
+            #
+            # This is the important part.  We do NOT require OCR to
+            # understand the username.  Black/bold pixels themselves
+            # are enough to find it.
+            #
+            dark = cv2.inRange(
                 roi,
-                145,
-                255,
-                cv2.THRESH_BINARY_INV
-            )[1]
-
-            kernel = np.ones(
-                (3, 3),
-                np.uint8
+                0,
+                155
             )
 
-            thick = cv2.morphologyEx(
-                binary,
-                cv2.MORPH_CLOSE,
-                kernel
+            # Remove tiny noise but keep individual letters.
+            dark = cv2.morphologyEx(
+                dark,
+                cv2.MORPH_OPEN,
+                cv2.getStructuringElement(
+                    cv2.MORPH_RECT,
+                    (2, 2)
+                ),
+                iterations=1
             )
 
-            thick_ratio = (
-                cv2.countNonZero(thick)
-                / thick.size
+            # Join letters that belong to the same username.
+            joined = cv2.dilate(
+                dark,
+                cv2.getStructuringElement(
+                    cv2.MORPH_RECT,
+                    (5, 3)
+                ),
+                iterations=1
             )
 
-            # ---------------------------------------------
-            # ESTIMATE WHETHER IT IS BOLD
-            # ---------------------------------------------
+            # =====================================================
+            # 4. LOCATE THE FIRST TEXT LINE
+            # =====================================================
+            row_counts = np.count_nonzero(
+                joined,
+                axis=1
+            )
 
-            likely_bold = False
+            active_rows = np.where(
+                row_counts >= 2
+            )[0]
 
-            # Strong dark text
-            if (
-                dark_ratio >= 0.16
-                and thick_ratio >= 0.18
-            ):
+            username_box = None
 
-                likely_bold = True
+            if active_rows.size:
+                # Group nearby active rows.
+                groups = []
+                start_row = int(active_rows[0])
+                previous = start_row
 
-            # Smaller but very dark text
-            elif (
-                dark_ratio >= 0.22
-                and region_height >= 10
-            ):
+                for row in active_rows[1:]:
+                    row = int(row)
 
-                likely_bold = True
+                    if row <= previous + 2:
+                        previous = row
+                    else:
+                        if previous - start_row + 1 >= 3:
+                            groups.append(
+                                (
+                                    start_row,
+                                    previous
+                                )
+                            )
 
-            # Large dark text
-            elif (
-                region_height >= 20
-                and dark_ratio >= 0.12
-            ):
+                        start_row = row
+                        previous = row
 
-                likely_bold = True
+                if previous - start_row + 1 >= 3:
+                    groups.append(
+                        (
+                            start_row,
+                            previous
+                        )
+                    )
 
-            if not likely_bold:
+                # Score every candidate line and choose the one
+                # with the strongest horizontal text footprint.
+                # This avoids accidentally selecting a card border or
+                # a tiny artifact above the actual username.
+                scored_groups = []
+
+                for gy1, gy2 in groups:
+                    band = joined[
+                        gy1:gy2 + 1,
+                        :
+                    ]
+
+                    xs = np.where(
+                        np.any(band > 0, axis=0)
+                    )[0]
+
+                    if xs.size < 3:
+                        continue
+
+                    gx1 = int(xs.min())
+                    gx2 = int(xs.max())
+                    line_width = gx2 - gx1 + 1
+
+                    if line_width < 8:
+                        continue
+
+                    ink = int(
+                        np.count_nonzero(band)
+                    )
+
+                    # Prefer broad, dense text.  Username strings
+                    # are normally much wider than border artifacts.
+                    score = (
+                        line_width * 3
+                        + ink * 2
+                    )
+
+                    scored_groups.append(
+                        (
+                            score,
+                            gx1,
+                            gy1,
+                            gx2,
+                            gy2
+                        )
+                    )
+
+                if scored_groups:
+                    _, gx1, gy1, gx2, gy2 = max(
+                        scored_groups,
+                        key=lambda item: item[0]
+                    )
+
+                    username_box = (
+                        gx1,
+                        gy1,
+                        gx2,
+                        gy2
+                    )
+
+            # =====================================================
+            # 5. OCR FALLBACK, BUT STILL CARD-LOCAL
+            # =====================================================
+            #
+            # If the name is low contrast and the pixel detector
+            # misses it, OCR is allowed to rescue it.  OCR is limited
+            # to this one card's username band, so it cannot blur
+            # unrelated text elsewhere in the screenshot.
+            #
+            if username_box is None:
+                try:
+                    enlarged = cv2.resize(
+                        roi,
+                        None,
+                        fx=4,
+                        fy=4,
+                        interpolation=cv2.INTER_CUBIC
+                    )
+
+                    ocr = pytesseract.image_to_data(
+                        enlarged,
+                        config="--oem 3 --psm 7",
+                        output_type=(
+                            pytesseract.Output.DICT
+                        )
+                    )
+
+                    boxes = []
+
+                    for i, raw in enumerate(
+                        ocr.get("text", [])
+                    ):
+                        value = str(raw).strip()
+
+                        if not value:
+                            continue
+
+                        try:
+                            confidence = float(
+                                ocr["conf"][i]
+                            )
+                        except Exception:
+                            confidence = -1
+
+                        if confidence < 15:
+                            continue
+
+                        ox = int(
+                            ocr["left"][i] / 4
+                        )
+                        oy = int(
+                            ocr["top"][i] / 4
+                        )
+                        ow = int(
+                            ocr["width"][i] / 4
+                        )
+                        oh = int(
+                            ocr["height"][i] / 4
+                        )
+
+                        if ow < 3 or oh < 2:
+                            continue
+
+                        boxes.append(
+                            (
+                                ox,
+                                oy,
+                                ox + ow - 1,
+                                oy + oh - 1
+                            )
+                        )
+
+                    if boxes:
+                        username_box = (
+                            min(b[0] for b in boxes),
+                            min(b[1] for b in boxes),
+                            max(b[2] for b in boxes),
+                            max(b[3] for b in boxes)
+                        )
+
+                except Exception as e:
+                    print(
+                        f"[PROOF] Card {index} OCR "
+                        f"fallback failed: {e}"
+                    )
+
+            if username_box is None:
+                print(
+                    f"[PROOF] Card {index}: "
+                    f"no username detected"
+                )
                 continue
 
-            # =================================================
-            # ADD PADDING AROUND THE TEXT
-            # =================================================
+            # =====================================================
+            # 6. CONVERT TO IMAGE COORDINATES + PADDING
+            # =====================================================
+            nx1, ny1, nx2, ny2 = username_box
 
+            tx1 = ux1 + nx1
+            ty1 = uy1 + ny1
+            tx2 = ux1 + nx2
+            ty2 = uy1 + ny2
+
+            text_w = tx2 - tx1 + 1
+            text_h = ty2 - ty1 + 1
+
+            # Enough padding to cover bold/highlighted edges, but
+            # never enough to reach the date row.
             pad_x = max(
-                3,
-                int(region_width * 0.08)
+                5,
+                min(16, int(text_w * 0.12))
             )
 
-            pad_y = max(
-                3,
-                int(region_height * 0.25)
+            pad_top = max(
+                4,
+                min(7, int(text_h * 0.45))
             )
 
-            bx1 = max(
-                0,
-                x1 - pad_x
+            pad_bottom = max(
+                5,
+                min(8, int(text_h * 0.55))
             )
 
-            by1 = max(
-                0,
-                y1 - pad_y
+            tx1 = max(
+                cx1 + 3,
+                tx1 - pad_x
             )
 
-            bx2 = min(
-                width,
-                x2 + pad_x
+            tx2 = min(
+                ux2,
+                tx2 + pad_x
             )
 
-            by2 = min(
-                height,
-                y2 + pad_y
+            ty1 = max(
+                cy1 + 3,
+                ty1 - pad_top
             )
 
-            # =================================================
-            # BLUR INDIVIDUAL TEXT
-            # =================================================
-
-            blur_region(
-                result,
-                bx1,
-                by1,
-                bx2,
-                by2,
-                radius=7
+            # Hard ceiling prevents the mask from touching the
+            # following date/time line.
+            username_ceiling = min(
+                height - 1,
+                cy1 + 39
             )
 
-            blur_count += 1
+            ty2 = min(
+                username_ceiling,
+                ty2 + pad_bottom
+            )
+
+            if tx2 <= tx1 or ty2 <= ty1:
+                continue
+
+            cv2.rectangle(
+                mask,
+                (tx1, ty1),
+                (tx2, ty2),
+                255,
+                -1
+            )
+
+            detected_names += 1
 
             print(
-                f"Blurred text: "
-                f"{text!r} "
-                f"dark={dark_ratio:.2f} "
-                f"thick={thick_ratio:.2f}"
+                f"[PROOF] Card {index}: "
+                f"username mask "
+                f"({tx1},{ty1})-({tx2},{ty2})"
             )
 
         print(
-            f"Proof blur complete: "
-            f"{blur_count} regions blurred."
+            f"[PROOF] Username regions: "
+            f"{detected_names}/{len(unique_cards)}"
         )
 
-        # =================================================
-        # SAVE
-        # =================================================
+        if detected_names == 0:
+            return image_data
+
+        # =========================================================
+        # 7. FINAL MASK EXPANSION
+        # =========================================================
+        #
+        # Only expands pixels already selected above.
+        #
+        mask = cv2.dilate(
+            mask,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (3, 3)
+            ),
+            iterations=1
+        )
+
+        # =========================================================
+        # 8. APPLY STRONG BLUR
+        # =========================================================
+        blur_radius = (
+            30 if blur_everything else 22
+        )
+
+        blurred = original.filter(
+            ImageFilter.GaussianBlur(
+                radius=blur_radius
+            )
+        )
+
+        mask_image = Image.fromarray(
+            mask,
+            mode="L"
+        )
+
+        result = Image.composite(
+            blurred,
+            original,
+            mask_image
+        )
+
+        # A second pass makes black/bold characters unreadable even
+        # if they were very dark.
+        if blur_everything:
+            second_blur = result.filter(
+                ImageFilter.GaussianBlur(
+                    radius=10
+                )
+            )
+
+            soft_mask = mask_image.filter(
+                ImageFilter.GaussianBlur(
+                    radius=1.5
+                )
+            )
+
+            result = Image.composite(
+                second_blur,
+                result,
+                soft_mask
+            )
 
         output = io.BytesIO()
 
@@ -846,48 +817,17 @@ def blur_proof_text(
 
         output.seek(0)
 
+        print(
+            "[PROOF] All-card username blur complete."
+        )
+
         return output.getvalue()
 
-    except Exception as error:
-
+    except Exception as e:
         print(
-            f"Proof processing error: {error}"
+            f"[PROOF] Blur error: {e}"
         )
-
-        # Never crash the bot because of an image
         return image_data
-
-
-# =========================================================
-# STAFF CHECK
-# =========================================================
-
-def is_staff(
-    interaction: discord.Interaction
-):
-
-    if interaction.guild is None:
-        return False
-
-    if interaction.user.guild_permissions.administrator:
-        return True
-
-    staff_role_id = config.get(
-        "staff_role_id"
-    )
-
-    if staff_role_id:
-
-        return any(
-            role.id == staff_role_id
-            for role in getattr(
-                interaction.user,
-                "roles",
-                []
-            )
-        )
-
-    return interaction.user.guild_permissions.manage_channels
 
 
 # =========================================================
@@ -899,28 +839,28 @@ pending_renames = {}
 
 async def process_channel_renames():
 
-    while True:
+    await bot.wait_until_ready()
+
+    while not bot.is_closed():
 
         if pending_renames:
 
-            channel_id, new_name = next(
-                iter(
-                    pending_renames.items()
+            items = list(
+                pending_renames.items()
+            )
+
+            for channel_id, new_name in items:
+
+                channel = bot.get_channel(
+                    channel_id
                 )
-            )
 
-            del pending_renames[
-                channel_id
-            ]
-
-            channel = bot.get_channel(
-                channel_id
-            )
-
-            if (
-                channel
-                and channel.name != new_name
-            ):
+                if channel is None:
+                    pending_renames.pop(
+                        channel_id,
+                        None
+                    )
+                    continue
 
                 try:
 
@@ -928,19 +868,27 @@ async def process_channel_renames():
                         name=new_name
                     )
 
-                except discord.HTTPException as error:
+                    pending_renames.pop(
+                        channel_id,
+                        None
+                    )
 
-                    if error.status == 429:
+                    await asyncio.sleep(2)
+
+                except discord.HTTPException as e:
+
+                    if e.status == 429:
 
                         retry_after = getattr(
-                            error,
+                            e,
                             "retry_after",
-                            60
+                            5
                         )
 
-                        pending_renames[
-                            channel_id
-                        ] = new_name
+                        print(
+                            f"Rate limited. "
+                            f"Retrying in {retry_after}s"
+                        )
 
                         await asyncio.sleep(
                             retry_after
@@ -949,16 +897,13 @@ async def process_channel_renames():
                     else:
 
                         print(
-                            f"Channel rename error: "
-                            f"{error}"
+                            f"Channel rename error: {e}"
                         )
 
-                except Exception as error:
-
-                    print(
-                        f"Channel rename error: "
-                        f"{error}"
-                    )
+                        pending_renames.pop(
+                            channel_id,
+                            None
+                        )
 
         await asyncio.sleep(5)
 
@@ -968,120 +913,93 @@ async def process_channel_renames():
 # =========================================================
 
 @bot.event
-async def on_member_join(
-    member: discord.Member
-):
+async def on_member_join(member):
 
-    customer_role_id = config.get(
-        "customer_role_id"
-    )
+    try:
 
-    if customer_role_id:
-
-        role = member.guild.get_role(
-            customer_role_id
+        customer_role_id = config.get(
+            "customer_role_id"
         )
 
-        if role:
+        if customer_role_id:
 
-            try:
+            role = member.guild.get_role(
+                int(customer_role_id)
+            )
 
-                await member.add_roles(
-                    role,
-                    reason=(
-                        "Automatic customer "
-                        "role on join"
+            if role:
+
+                try:
+                    await member.add_roles(
+                        role,
+                        reason="Automatic customer role"
                     )
-                )
+                except Exception as e:
+                    print(
+                        f"Customer role error: {e}"
+                    )
 
-            except discord.Forbidden:
-
-                print(
-                    f"Cannot give {role.name} "
-                    f"to {member}"
-                )
-
-            except Exception as error:
-
-                print(
-                    f"Role assignment error: "
-                    f"{error}"
-                )
-
-    channel_id = config.get(
-        "welcome_goodbye_channel_id"
-    )
-
-    if not channel_id:
-        return
-
-    channel = member.guild.get_channel(
-        channel_id
-    )
-
-    if not isinstance(
-        channel,
-        discord.TextChannel
-    ):
-        return
-
-    embed = discord.Embed(
-
-        title=(
-            "╭───────────── ୨୧ ─────────────╮\n"
-            "       🌸˚₊ 𝘸𝘦𝘭𝘤𝘰𝘮𝘦 𝘵𝘰 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦! ♡\n"
-            "╰───────────── ୨୧ ─────────────╯"
-        ),
-
-        description=(
-            f"Welcome {member.mention}! "
-            "We are so thrilled to have you "
-            "join our community! ♡\n\n"
-
-            "✦ **Getting Started:**\n"
-            "Check out our products and shop listings!\n"
-            "Open a support ticket to place custom "
-            "orders or ask questions!\n"
-            "Feel free to hang out and chat with "
-            "our lovely members!\n\n"
-
-            "─────────────── ୨୧ ───────────────"
-        ),
-
-        color=PINK
-    )
-
-    embed.set_thumbnail(
-        url=member.display_avatar.url
-    )
-
-    embed.add_field(
-        name="🌸˚₊ Customer",
-        value=f"• {member.mention}",
-        inline=True
-    )
-
-    embed.add_field(
-        name="⭐˚₊ Member Count",
-        value=(
-            f"• `#{member.guild.member_count}`"
-        ),
-        inline=True
-    )
-
-    await channel.send(
-
-        content=(
-            f"👋 Welcome to the server "
-            f"{member.mention}! ♡"
-        ),
-
-        embed=embed,
-
-        allowed_mentions=discord.AllowedMentions(
-            users=[member]
+        channel_id = config.get(
+            "welcome_goodbye_channel_id"
         )
-    )
+
+        if not channel_id:
+            return
+
+        channel = member.guild.get_channel(
+            int(channel_id)
+        )
+
+        if not channel:
+            return
+
+        embed = styled_embed(
+            """
+╭───────────── ୨୧ ─────────────╮
+       🌸˚₊ 𝘸𝘦𝘭𝘤𝘰𝘮𝘦 𝘵𝘰 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦! ♡
+╰───────────── ୨୧ ─────────────╯
+            """,
+            f"""
+Welcome {member.mention}! ♡
+
+**Getting Started**
+୨୧ Check out our products and shop
+୨୧ Open a support ticket if you need help
+୨୧ Read the server information
+୨୧ Have fun and enjoy your stay! ♡
+
+━━━━━━━━━━━━━━━━━━━━
+            """
+        )
+
+        embed.set_thumbnail(
+            url=member.display_avatar.url
+        )
+
+        embed.add_field(
+            name="Customer",
+            value=member.mention,
+            inline=True
+        )
+
+        embed.add_field(
+            name="Member Count",
+            value=str(
+                member.guild.member_count
+            ),
+            inline=True
+        )
+
+        await channel.send(
+            content=member.mention,
+            embed=embed
+        )
+
+    except Exception as e:
+
+        print(
+            f"Join event error: {e}"
+        )
 
 
 # =========================================================
@@ -1089,74 +1007,64 @@ async def on_member_join(
 # =========================================================
 
 @bot.event
-async def on_member_remove(
-    member: discord.Member
-):
+async def on_member_remove(member):
 
-    channel_id = config.get(
-        "welcome_goodbye_channel_id"
-    )
+    try:
 
-    if not channel_id:
-        return
+        channel_id = config.get(
+            "welcome_goodbye_channel_id"
+        )
 
-    channel = member.guild.get_channel(
-        channel_id
-    )
+        if not channel_id:
+            return
 
-    if not isinstance(
-        channel,
-        discord.TextChannel
-    ):
-        return
+        channel = member.guild.get_channel(
+            int(channel_id)
+        )
 
-    embed = discord.Embed(
+        if not channel:
+            return
 
-        title=(
-            "╭───────────── ୨୧ ─────────────╮\n"
-            "            💔˚₊ 𝘨𝘰𝘰𝘥𝘣𝘺𝘦, 𝘴𝘦𝘦 𝘺𝘰𝘶 𝘴𝘰𝘰𝘯! ♡\n"
-            "╰───────────── ୨୧ ─────────────╯"
-        ),
+        embed = styled_embed(
+            """
+╭───────────── ୨୧ ─────────────╮
+            💔˚₊ 𝘨𝘰𝘰𝘥𝘣𝘺𝘦, 𝘴𝘦𝘦 𝘺𝘰𝘶 𝘴𝘰𝘰𝘯! ♡
+╰───────────── ୨୧ ─────────────╯
+            """,
+            f"""
+{member.mention} has left ali's adm house. ♡
 
-        description=(
-            f"**{member.name}** has left "
-            "**ali's adm house**... 💔\n\n"
+We hope to see you again soon!
+            """
+        )
 
-            "We're sad to see you leave, "
-            "but we hope to see you back again soon! ♡\n\n"
+        embed.set_thumbnail(
+            url=member.display_avatar.url
+        )
 
-            "─────────────── ୨୧ ───────────────"
-        ),
+        await channel.send(
+            embed=embed
+        )
 
-        color=GRAY
-    )
+    except Exception as e:
 
-    embed.set_thumbnail(
-        url=member.display_avatar.url
-    )
-
-    await channel.send(
-        embed=embed
-    )
+        print(
+            f"Leave event error: {e}"
+        )
 
 
 # =========================================================
 # TICKET VIEW
 # =========================================================
 
-class TicketView(
-    discord.ui.View
-):
+class TicketView(discord.ui.View):
 
     def __init__(self):
-
-        super().__init__(
-            timeout=None
-        )
+        super().__init__(timeout=None)
 
     @discord.ui.button(
         label="Open Ticket",
-        emoji="🎫",
+        emoji="🎀",
         style=discord.ButtonStyle.primary,
         custom_id="ali_adm_open_ticket"
     )
@@ -1166,67 +1074,57 @@ class TicketView(
         button: discord.ui.Button
     ):
 
-        guild = interaction.guild
+        if not interaction.guild:
 
-        if guild is None:
+            await interaction.response.send_message(
+                "This can only be used in a server.",
+                ephemeral=True
+            )
+
             return
 
         category_id = config.get(
             "ticket_category_id"
         )
 
-        category = (
-            guild.get_channel(
-                category_id
-            )
-            if category_id
-            else None
-        )
+        if not category_id:
 
-        if not isinstance(
-            category,
-            discord.CategoryChannel
-        ):
-
-            return await interaction.response.send_message(
-
-                "❌ The ticket category "
-                "hasn't been configured yet.",
-
+            await interaction.response.send_message(
+                "Tickets are not configured yet.",
                 ephemeral=True
             )
 
-        for channel in guild.text_channels:
+            return
 
-            if channel.topic == (
-                f"ali_adm_ticket:"
-                f"{interaction.user.id}"
+        category = interaction.guild.get_channel(
+            int(category_id)
+        )
+
+        if not category:
+
+            await interaction.response.send_message(
+                "The ticket category could not be found.",
+                ephemeral=True
+            )
+
+            return
+
+        for channel in category.channels:
+
+            if (
+                channel.topic
+                == f"ali_adm_ticket:{interaction.user.id}"
             ):
 
-                return await interaction.response.send_message(
-
-                    f"❌ You already have an "
-                    f"open ticket: "
-                    f"{channel.mention}",
-
+                await interaction.response.send_message(
+                    f"You already have an open ticket: {channel.mention}",
                     ephemeral=True
                 )
 
-        staff_role = None
-
-        staff_role_id = config.get(
-            "staff_role_id"
-        )
-
-        if staff_role_id:
-
-            staff_role = guild.get_role(
-                staff_role_id
-            )
+                return
 
         overwrites = {
-
-            guild.default_role:
+            interaction.guild.default_role:
                 discord.PermissionOverwrite(
                     view_channel=False
                 ),
@@ -1235,108 +1133,81 @@ class TicketView(
                 discord.PermissionOverwrite(
                     view_channel=True,
                     send_messages=True,
-                    read_message_history=True,
-                    attach_files=True,
-                    embed_links=True
+                    read_message_history=True
                 )
         }
 
-        if staff_role:
-
-            overwrites[
-                staff_role
-            ] = discord.PermissionOverwrite(
-
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                manage_channels=True,
-                attach_files=True,
-                embed_links=True
-            )
-
-        username = (
-            interaction.user.name
-            .lower()
-            .replace(" ", "-")
-            .replace("_", "-")
+        staff_role_id = config.get(
+            "staff_role_id"
         )
 
-        ticket_name = (
-            f"ticket-{username}"
+        if staff_role_id:
+
+            staff_role = interaction.guild.get_role(
+                int(staff_role_id)
+            )
+
+            if staff_role:
+
+                overwrites[staff_role] = (
+                    discord.PermissionOverwrite(
+                        view_channel=True,
+                        send_messages=True,
+                        read_message_history=True,
+                        manage_messages=True
+                    )
+                )
+
+        channel_name = (
+            f"ticket-{interaction.user.name}"
         )[:90]
 
         try:
 
-            ticket_channel = (
-                await guild.create_text_channel(
-
-                    name=ticket_name,
-
-                    category=category,
-
-                    overwrites=overwrites,
-
-                    topic=(
-                        f"ali_adm_ticket:"
-                        f"{interaction.user.id}"
-                    )
+            ticket = await interaction.guild.create_text_channel(
+                channel_name,
+                category=category,
+                overwrites=overwrites,
+                topic=(
+                    f"ali_adm_ticket:"
+                    f"{interaction.user.id}"
                 )
             )
 
-        except discord.Forbidden:
+        except Exception as e:
 
-            return await interaction.response.send_message(
-
-                "❌ I don't have permission "
-                "to create ticket channels.",
-
+            await interaction.response.send_message(
+                f"Could not create ticket: `{e}`",
                 ephemeral=True
             )
 
-        embed = discord.Embed(
+            return
 
-            title=(
-                "୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡"
-            ),
+        embed = styled_embed(
+            "୨୧・𝘵𝘪𝘤𝘬𝘦𝘵 𝘰𝘱𝘦𝘯𝘦𝘥 ♡",
+            f"""
+Welcome {interaction.user.mention}! ♡
 
-            description=(
-                f"Welcome {interaction.user.mention}! ♡\n\n"
+Please tell us:
 
-                "Thank you for contacting "
-                "**ali's adm house**!\n\n"
+୨୧ What house/build do you want?
+୨୧ What type of build?
+୨୧ Any specific details?
+୨୧ Anything else we should know?
 
-                "Please tell us what you need help with.\n\n"
-
-                "୨୧ **House:**\n"
-                "୨୧ **Build type:**\n\n"
-
-                "A staff member will be with "
-                "you shortly. ♡"
-            ),
-
-            color=PINK
-        )
-
-        await ticket_channel.send(
-
-            content=interaction.user.mention,
-
-            embed=embed,
-
-            view=CloseTicketView(),
-
-            allowed_mentions=discord.AllowedMentions(
-                users=[interaction.user]
-            )
+A staff member will help you shortly. ♡
+            """
         )
 
         await interaction.response.send_message(
-
-            f"🎫 Your ticket has been created: "
-            f"{ticket_channel.mention}",
-
+            f"Your ticket has been created: {ticket.mention}",
             ephemeral=True
+        )
+
+        await ticket.send(
+            content=interaction.user.mention,
+            embed=embed,
+            view=CloseTicketView()
         )
 
 
@@ -1344,15 +1215,10 @@ class TicketView(
 # CLOSE TICKET VIEW
 # =========================================================
 
-class CloseTicketView(
-    discord.ui.View
-):
+class CloseTicketView(discord.ui.View):
 
     def __init__(self):
-
-        super().__init__(
-            timeout=None
-        )
+        super().__init__(timeout=None)
 
     @discord.ui.button(
         label="Close Ticket",
@@ -1366,140 +1232,129 @@ class CloseTicketView(
         button: discord.ui.Button
     ):
 
+        if not interaction.guild:
+
+            await interaction.response.send_message(
+                "This can only be used in a server.",
+                ephemeral=True
+            )
+
+            return
+
+        channel = interaction.channel
+
+        if not isinstance(
+            channel,
+            discord.TextChannel
+        ):
+
+            await interaction.response.send_message(
+                "This is not a ticket channel.",
+                ephemeral=True
+            )
+
+            return
+
+        # Staff can close immediately
         if is_staff(interaction):
 
             await interaction.response.send_message(
-
-                "🔒 Closing ticket in "
-                "**3 seconds**..."
+                "🔒 Closing ticket in 3 seconds...",
+                ephemeral=False
             )
 
             await asyncio.sleep(3)
 
-            if interaction.channel:
-
-                await interaction.channel.delete(
-                    reason=(
-                        f"Ticket closed by staff "
-                        f"{interaction.user}"
-                    )
+            try:
+                await channel.delete(
+                    reason="Ticket closed by staff"
                 )
+            except Exception:
+                pass
 
             return
 
-        guild = interaction.guild
-
-        if guild is None:
-            return
-
+        # Customer vouch requirement
         vouch_channel_id = config.get(
             "vouch_channel_id"
         )
 
-        vouch_channel = (
-            guild.get_channel(
-                vouch_channel_id
-            )
-            if vouch_channel_id
-            else None
-        )
+        if not vouch_channel_id:
 
-        if not isinstance(
-            vouch_channel,
-            discord.TextChannel
-        ):
-
-            return await interaction.response.send_message(
-
-                "❌ The vouch channel has "
-                "not been configured yet.",
-
+            await interaction.response.send_message(
+                "Vouch channel is not configured.",
                 ephemeral=True
             )
 
-        ticket_created_at = (
-            interaction.channel.created_at
-            if interaction.channel
-            else discord.utils.utcnow()
+            return
+
+        vouch_channel = interaction.guild.get_channel(
+            int(vouch_channel_id)
         )
+
+        if not vouch_channel:
+
+            await interaction.response.send_message(
+                "Vouch channel could not be found.",
+                ephemeral=True
+            )
+
+            return
 
         has_vouched = False
 
-        async for message in vouch_channel.history(
-            limit=100
-        ):
+        try:
 
-            if message.author != bot.user:
-                continue
-
-            if (
-                interaction.user in message.mentions
-                or str(interaction.user.id)
-                in message.content
+            async for message in vouch_channel.history(
+                limit=1000
             ):
 
+                if message.author.id != bot.user.id:
+                    continue
+
                 if (
-                    message.created_at
-                    >= ticket_created_at
+                    interaction.user.mention
+                    in message.content
+                    or str(interaction.user.id)
+                    in message.content
                 ):
 
                     has_vouched = True
                     break
 
-        bot_commands_channel = discord.utils.get(
+        except Exception as e:
 
-            guild.text_channels,
-
-            name="₊˚⊹♡-𝓫𝓸𝓽-𝓬𝓸𝓶𝓶𝓪𝓷𝓭𝓼"
-        )
-
-        if bot_commands_channel:
-
-            commands_mention = (
-                bot_commands_channel.mention
-            )
-
-        else:
-
-            commands_mention = (
-                "`#₊˚⊹♡-𝓫𝓸𝓽-𝓬𝓸𝓶𝓶𝓪𝓷𝓭𝓼`"
+            print(
+                f"Vouch check error: {e}"
             )
 
         if not has_vouched:
 
-            return await interaction.response.send_message(
+            await interaction.response.send_message(
+                """
+You need to leave a vouch before closing your ticket. ♡
 
-                "Did you vouch yet? ♡\n\n"
-
-                f"Please use `/vouch` in "
-                f"{commands_mention} "
-                "before closing your ticket!",
-
+Please use `/vouch` in
+`₊˚⊹♡-𝓫𝓸𝓽-𝓬𝓸𝓶𝓶𝓪𝓷𝓭𝓼`
+                """,
                 ephemeral=True
             )
 
+            return
+
         await interaction.response.send_message(
-
-            "Thank you so much for your order "
-            "and for leaving a vouch! ♡\n"
-
-            "We hope to see you again at "
-            "**ali's adm house**! 🌸\n\n"
-
-            "🔒 *Closing this ticket "
-            "in 3 seconds...*"
+            "🔒 Vouch found! Closing ticket in 3 seconds...",
+            ephemeral=False
         )
 
         await asyncio.sleep(3)
 
-        if interaction.channel:
-
-            await interaction.channel.delete(
-                reason=(
-                    f"Ticket closed by customer "
-                    f"{interaction.user}"
-                )
+        try:
+            await channel.delete(
+                reason="Ticket closed"
             )
+        except Exception:
+            pass
 
 
 # =========================================================
@@ -1516,28 +1371,26 @@ async def on_ready():
 
     if not getattr(
         bot,
-        "_persistent_views_loaded",
+        "_persistent_views_added",
         False
     ):
 
-        bot.add_view(
-            TicketView()
-        )
+        bot.add_view(TicketView())
+        bot.add_view(CloseTicketView())
 
-        bot.add_view(
-            CloseTicketView()
-        )
+        bot._persistent_views_added = True
 
-        bot._persistent_views_loaded = True
-
-    if not hasattr(
+    if not getattr(
         bot,
-        "_rename_task"
+        "_rename_task_started",
+        False
     ):
 
-        bot._rename_task = asyncio.create_task(
+        asyncio.create_task(
             process_channel_renames()
         )
+
+        bot._rename_task_started = True
 
     if not getattr(
         bot,
@@ -1549,17 +1402,16 @@ async def on_ready():
 
             synced = await bot.tree.sync()
 
-            bot._commands_synced = True
-
             print(
-                f"Successfully synced "
-                f"{len(synced)} slash commands."
+                f"Synced {len(synced)} slash commands."
             )
 
-        except Exception as error:
+            bot._commands_synced = True
+
+        except Exception as e:
 
             print(
-                f"Command sync error: {error}"
+                f"Slash command sync error: {e}"
             )
 
 
@@ -1569,74 +1421,56 @@ async def on_ready():
 
 @bot.tree.command(
     name="setup",
-    description="Configure the ticket system."
-)
-@app_commands.default_permissions(
-    administrator=True
+    description="Set up the ali's adm house ticket system."
 )
 @app_commands.describe(
-    panel_channel="Channel for the ticket panel",
-    ticket_category="Category where tickets are created",
-    staff_role="Staff role",
-    vouch_channel="Vouch channel"
+    panel_channel="Ticket panel channel",
+    ticket_category="Ticket category",
+    staff_role="Optional staff role",
+    vouch_channel="Optional vouch channel"
 )
 async def setup(
     interaction: discord.Interaction,
     panel_channel: discord.TextChannel,
     ticket_category: discord.CategoryChannel,
-    staff_role: discord.Role | None = None,
-    vouch_channel: discord.TextChannel | None = None
+    staff_role: discord.Role = None,
+    vouch_channel: discord.TextChannel = None
 ):
 
     if not interaction.user.guild_permissions.administrator:
 
-        return await interaction.response.send_message(
-
-            "❌ You need **Administrator** permission.",
-
+        await interaction.response.send_message(
+            "You need Administrator permission.",
             ephemeral=True
         )
 
-    config[
-        "panel_channel_id"
-    ] = panel_channel.id
+        return
 
-    config[
-        "ticket_category_id"
-    ] = ticket_category.id
+    config["panel_channel_id"] = panel_channel.id
+    config["ticket_category_id"] = ticket_category.id
 
-    config[
-        "staff_role_id"
-    ] = (
-        staff_role.id
-        if staff_role
-        else None
-    )
+    if staff_role:
+        config["staff_role_id"] = staff_role.id
 
     if vouch_channel:
+        config["vouch_channel_id"] = vouch_channel.id
 
-        config[
-            "vouch_channel_id"
-        ] = vouch_channel.id
+    save_config()
 
-    save_config(config)
+    embed = styled_embed(
+        "୨୧・𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦 ♡",
+        """
+Need help with your house?
 
-    embed = discord.Embed(
+Open a ticket below and tell us
+what house/build you would like. ♡
 
-        title=(
-            "୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡"
-        ),
-
-        description=(
-            "Need help with an order?\n"
-            "Want to ask about one of our houses?\n\n"
-
-            "Click **🎫 Open Ticket** below "
-            "to create a private ticket with "
-            "our staff! ♡"
-        ),
-
-        color=PINK
+୨୧ Custom houses
+୨୧ Grinding houses
+୨୧ Cute houses
+୨୧ Anime/cartoon houses
+୨୧ And more!
+        """
     )
 
     await panel_channel.send(
@@ -1645,9 +1479,7 @@ async def setup(
     )
 
     await interaction.response.send_message(
-
-        "♡ Ticket system configured successfully!",
-
+        "Ticket system configured! ♡",
         ephemeral=True
     )
 
@@ -1658,36 +1490,27 @@ async def setup(
 
 @bot.tree.command(
     name="setupstatus",
-    description="Configure the shop status channel."
-)
-@app_commands.default_permissions(
-    administrator=True
+    description="Set up the status channel."
 )
 async def setupstatus(
     interaction: discord.Interaction,
-    status_channel: discord.TextChannel
+    channel: discord.TextChannel
 ):
 
     if not interaction.user.guild_permissions.administrator:
 
-        return await interaction.response.send_message(
-
-            "❌ You need **Administrator** permission.",
-
+        await interaction.response.send_message(
+            "You need Administrator permission.",
             ephemeral=True
         )
 
-    config[
-        "status_channel_id"
-    ] = status_channel.id
+        return
 
-    save_config(config)
+    config["status_channel_id"] = channel.id
+    save_config()
 
     await interaction.response.send_message(
-
-        f"♡ Status channel set to "
-        f"{status_channel.mention}.",
-
+        f"Status channel set to {channel.mention}.",
         ephemeral=True
     )
 
@@ -1698,42 +1521,36 @@ async def setupstatus(
 
 @bot.tree.command(
     name="setupjoins",
-    description="Configure welcome/goodbye messages."
+    description="Set up welcome and goodbye messages."
 )
-@app_commands.default_permissions(
-    administrator=True
+@app_commands.describe(
+    channel="Welcome/goodbye channel",
+    customer_role="Customer role"
 )
 async def setupjoins(
     interaction: discord.Interaction,
-    welcome_goodbye_channel: discord.TextChannel,
-    customer_role: discord.Role | None = None
+    channel: discord.TextChannel,
+    customer_role: discord.Role = None
 ):
 
     if not interaction.user.guild_permissions.administrator:
 
-        return await interaction.response.send_message(
-
-            "❌ You need **Administrator** permission.",
-
+        await interaction.response.send_message(
+            "You need Administrator permission.",
             ephemeral=True
         )
 
-    config[
-        "welcome_goodbye_channel_id"
-    ] = welcome_goodbye_channel.id
+        return
+
+    config["welcome_goodbye_channel_id"] = channel.id
 
     if customer_role:
+        config["customer_role_id"] = customer_role.id
 
-        config[
-            "customer_role_id"
-        ] = customer_role.id
-
-    save_config(config)
+    save_config()
 
     await interaction.response.send_message(
-
-        "♡ Welcome/goodbye system configured!",
-
+        "Welcome/goodbye system configured! ♡",
         ephemeral=True
     )
 
@@ -1744,36 +1561,27 @@ async def setupjoins(
 
 @bot.tree.command(
     name="setupproof",
-    description="Configure the proof submission channel."
-)
-@app_commands.default_permissions(
-    administrator=True
+    description="Set up the proof channel."
 )
 async def setupproof(
     interaction: discord.Interaction,
-    proof_channel: discord.TextChannel
+    channel: discord.TextChannel
 ):
 
     if not interaction.user.guild_permissions.administrator:
 
-        return await interaction.response.send_message(
-
-            "❌ You need **Administrator** permission.",
-
+        await interaction.response.send_message(
+            "You need Administrator permission.",
             ephemeral=True
         )
 
-    config[
-        "proof_channel_id"
-    ] = proof_channel.id
+        return
 
-    save_config(config)
+    config["proof_channel_id"] = channel.id
+    save_config()
 
     await interaction.response.send_message(
-
-        "♡ Proof channel configured successfully!\n\n"
-        f"📸 Proof Channel: {proof_channel.mention}",
-
+        f"Proof channel set to {channel.mention}.",
         ephemeral=True
     )
 
@@ -1784,47 +1592,38 @@ async def setupproof(
 
 @bot.tree.command(
     name="ticketpanel",
-    description="Send a ticket panel."
+    description="Send the ticket panel."
 )
 async def ticketpanel(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel
+    interaction: discord.Interaction
 ):
 
     if not is_staff(interaction):
 
-        return await interaction.response.send_message(
-
-            "❌ You need staff permissions.",
-
+        await interaction.response.send_message(
+            "You don't have permission to use this.",
             ephemeral=True
         )
 
-    embed = discord.Embed(
+        return
 
-        title=(
-            "୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡"
-        ),
+    embed = styled_embed(
+        "୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
+        """
+Need help?
 
-        description=(
-            "Need help? ♡\n\n"
-            "Click **🎫 Open Ticket** below "
-            "to create a private ticket."
-        ),
-
-        color=PINK
+Click **Open Ticket** below to create
+your private support ticket. ♡
+        """
     )
 
-    await channel.send(
+    await interaction.channel.send(
         embed=embed,
         view=TicketView()
     )
 
     await interaction.response.send_message(
-
-        f"♡ Ticket panel sent to "
-        f"{channel.mention}.",
-
+        "Ticket panel sent! ♡",
         ephemeral=True
     )
 
@@ -1835,7 +1634,7 @@ async def ticketpanel(
 
 @bot.tree.command(
     name="ping",
-    description="Check the bot latency."
+    description="Check bot latency."
 )
 async def ping(
     interaction: discord.Interaction
@@ -1846,10 +1645,7 @@ async def ping(
     )
 
     await interaction.response.send_message(
-
-        f"♡ Pong!\n"
-        f"🌸 Latency: **{latency}ms**",
-
+        f"🏓 Pong! `{latency}ms`",
         ephemeral=True
     )
 
@@ -1860,10 +1656,10 @@ async def ping(
 
 @bot.tree.command(
     name="proof",
-    description="Submit a proof screenshot."
+    description="Upload a proof image."
 )
 @app_commands.describe(
-    image="Upload your proof screenshot"
+    image="Proof image"
 )
 async def proof(
     interaction: discord.Interaction,
@@ -1874,69 +1670,52 @@ async def proof(
         "proof_channel_id"
     )
 
-    proof_channel = (
-        interaction.guild.get_channel(
-            proof_channel_id
+    if not proof_channel_id:
+
+        await interaction.response.send_message(
+            "Proof channel is not configured.",
+            ephemeral=True
         )
-        if proof_channel_id
-        and interaction.guild
-        else None
+
+        return
+
+    proof_channel = interaction.guild.get_channel(
+        int(proof_channel_id)
     )
 
-    if not isinstance(
-        proof_channel,
-        discord.TextChannel
-    ):
+    if not proof_channel:
 
-        return await interaction.response.send_message(
-
-            "❌ The proof channel hasn't "
-            "been configured yet.\n\n"
-
-            "Ask an administrator to use "
-            "`/setupproof`.",
-
+        await interaction.response.send_message(
+            "Proof channel could not be found.",
             ephemeral=True
         )
 
-    # =====================================================
-    # IMAGE CHECK
-    # =====================================================
+        return
 
-    if not image.content_type:
+    valid_extensions = (
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp"
+    )
 
-        filename = (
-            image.filename.lower()
-        )
+    content_type = (
+        image.content_type or ""
+    ).lower()
 
-        valid_extensions = (
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".webp"
-        )
+    filename = image.filename.lower()
 
-        if not filename.endswith(
-            valid_extensions
-        ):
-
-            return await interaction.response.send_message(
-
-                "❌ Please upload an image!",
-
-                ephemeral=True
-            )
-
-    elif not image.content_type.startswith(
-        "image/"
+    if not (
+        content_type.startswith("image/")
+        or filename.endswith(valid_extensions)
     ):
 
-        return await interaction.response.send_message(
-
-            "❌ Please upload an image file!",
-
+        await interaction.response.send_message(
+            "Please upload a PNG, JPG, JPEG, or WEBP image.",
             ephemeral=True
         )
+
+        return
 
     await interaction.response.defer(
         ephemeral=True
@@ -1944,71 +1723,44 @@ async def proof(
 
     try:
 
-        # =================================================
-        # DOWNLOAD IMAGE
-        # =================================================
-
         image_data = await image.read()
 
-        # =================================================
-        # SCAN WHOLE IMAGE + BLUR BOLD TEXT
-        # =================================================
-
-        blurred_data = blur_proof_text(
-            image_data
+        blur_everything = config.get(
+            "blur_everything",
+            True
         )
 
-        # =================================================
-        # SEND PROOF
-        #
-        # NO EMBED
-        # NO SUBMITTER
-        # NO DESCRIPTION
-        # NO EXTRA FOOTER
-        # =================================================
+        blurred_data = blur_proof_text(
+            image_data,
+            blur_everything=blur_everything
+        )
 
         file = discord.File(
-
-            io.BytesIO(
-                blurred_data
-            ),
-
+            io.BytesIO(blurred_data),
             filename="proof.png"
         )
 
         await proof_channel.send(
-
-            content=(
-                "♡ **New Proof!**\n"
-                "Thank you so much! ♡"
-            ),
-
+            content="""
+♡ **New Proof!**
+Thank you so much! ♡
+            """,
             file=file
         )
 
-        # =================================================
-        # USER CONFIRMATION
-        # =================================================
-
         await interaction.followup.send(
-
-            "♡ Your proof has been submitted!\n"
-            "Thank you so much! ⭐",
-
+            "Your proof has been submitted! ♡",
             ephemeral=True
         )
 
-    except Exception as error:
+    except Exception as e:
 
         print(
-            f"Proof processing error: {error}"
+            f"Proof command error: {e}"
         )
 
         await interaction.followup.send(
-
-            "❌ There was an error processing "
-            "your proof. Please try again.",
-
+            "Something went wrong while processing the proof.",
             ephemeral=True
         )
 
@@ -2019,7 +1771,7 @@ async def proof(
 
 @bot.tree.command(
     name="vouch",
-    description="Leave a vouch."
+    description="Leave a customer vouch."
 )
 @app_commands.describe(
     message="Your vouch message"
@@ -2029,72 +1781,54 @@ async def vouch(
     message: str
 ):
 
-    channel_id = config.get(
+    vouch_channel_id = config.get(
         "vouch_channel_id"
     )
 
-    channel = (
-        interaction.guild.get_channel(
-            channel_id
-        )
-        if channel_id
-        and interaction.guild
-        else None
-    )
+    if not vouch_channel_id:
 
-    if not isinstance(
-        channel,
-        discord.TextChannel
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ The vouch channel hasn't "
-            "been configured yet.",
-
+        await interaction.response.send_message(
+            "Vouch channel is not configured.",
             ephemeral=True
         )
 
-    embed = discord.Embed(
+        return
 
-        title=(
-            "୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡"
-        ),
+    channel = interaction.guild.get_channel(
+        int(vouch_channel_id)
+    )
 
-        description=(
-            f"**{message}**\n\n"
+    if not channel:
 
-            "୨୧ **𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳**\n"
-            f"{interaction.user.mention}\n\n"
+        await interaction.response.send_message(
+            "Vouch channel could not be found.",
+            ephemeral=True
+        )
 
-            "Thank you so much! ♡"
-        ),
+        return
 
-        color=PINK
+    embed = styled_embed(
+        "୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡",
+        f"""
+**Message**
+{message}
+
+**Customer**
+{interaction.user.mention}
+        """
     )
 
     embed.set_author(
-        name=(
-            "୨୧ 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦 ♡"
-        )
+        name="୨୧ 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦 ♡"
     )
 
     await channel.send(
-
         content=interaction.user.mention,
-
-        embed=embed,
-
-        allowed_mentions=discord.AllowedMentions(
-            users=[interaction.user]
-        )
+        embed=embed
     )
 
     await interaction.response.send_message(
-
-        "♡ Your vouch has been posted! "
-        "Thank you! ⭐",
-
+        "Thank you for your vouch! ♡",
         ephemeral=True
     )
 
@@ -2111,50 +1845,54 @@ async def vouchcount(
     interaction: discord.Interaction
 ):
 
-    channel_id = config.get(
+    vouch_channel_id = config.get(
         "vouch_channel_id"
     )
 
-    channel = (
-        interaction.guild.get_channel(
-            channel_id
-        )
-        if channel_id
-        and interaction.guild
-        else None
-    )
+    if not vouch_channel_id:
 
-    if not isinstance(
-        channel,
-        discord.TextChannel
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ Vouch channel isn't configured.",
-
+        await interaction.response.send_message(
+            "Vouch channel is not configured.",
             ephemeral=True
         )
 
-    await interaction.response.defer(
-        ephemeral=True
+        return
+
+    channel = interaction.guild.get_channel(
+        int(vouch_channel_id)
     )
+
+    if not channel:
+
+        await interaction.response.send_message(
+            "Vouch channel could not be found.",
+            ephemeral=True
+        )
+
+        return
 
     count = 0
 
-    async for message in channel.history(
-        limit=None
-    ):
+    try:
 
-        if message.author == bot.user:
+        async for message in channel.history(
+            limit=None
+        ):
 
-            count += 1
+            if (
+                bot.user
+                and message.author.id == bot.user.id
+            ):
+                count += 1
 
-    await interaction.followup.send(
+    except Exception as e:
 
-        f"♡ **ali's adm house** has "
-        f"**{count}** vouch(es)! ⭐",
+        print(
+            f"Vouch count error: {e}"
+        )
 
+    await interaction.response.send_message(
+        f"୨୧ Total vouches: **{count}** ♡",
         ephemeral=True
     )
 
@@ -2165,20 +1903,21 @@ async def vouchcount(
 
 @bot.tree.command(
     name="status",
-    description="Update the shop status."
+    description="Change shop status."
+)
+@app_commands.describe(
+    status="Shop status"
 )
 @app_commands.choices(
-    state=[
+    status=[
         app_commands.Choice(
             name="Available",
             value="available"
         ),
-
         app_commands.Choice(
             name="Busy",
             value="busy"
         ),
-
         app_commands.Choice(
             name="Closed",
             value="closed"
@@ -2187,165 +1926,148 @@ async def vouchcount(
 )
 async def status(
     interaction: discord.Interaction,
-    state: app_commands.Choice[str]
+    status: app_commands.Choice[str]
 ):
 
     if not is_staff(interaction):
 
-        return await interaction.response.send_message(
-
-            "❌ Only staff can update the status.",
-
+        await interaction.response.send_message(
+            "You don't have permission to use this.",
             ephemeral=True
         )
+
+        return
 
     status_channel_id = config.get(
         "status_channel_id"
     )
 
-    channel = (
-        interaction.guild.get_channel(
-            status_channel_id
-        )
-        if status_channel_id
-        else None
-    )
+    if not status_channel_id:
 
-    if not isinstance(
-        channel,
-        discord.TextChannel
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ Status channel isn't configured.",
-
+        await interaction.response.send_message(
+            "Status channel is not configured.",
             ephemeral=True
         )
 
-    if state.value == "available":
+        return
 
-        title = (
-            "🟢・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘢𝘷𝘢𝘪𝘭𝘢𝘣𝘭𝘦"
+    channel = interaction.guild.get_channel(
+        int(status_channel_id)
+    )
+
+    if not channel:
+
+        await interaction.response.send_message(
+            "Status channel could not be found.",
+            ephemeral=True
         )
 
-        description = (
-            "Our shop is currently **OPEN** "
-            "for new orders! ♡"
+        return
+
+    statuses = {
+
+        "available": (
+            "🟢",
+            "𝘢𝘷𝘢𝘪𝘭𝘢𝘣𝘭𝘦",
+            GREEN
+        ),
+
+        "busy": (
+            "🔴",
+            "𝘣𝘶𝘴𝘺",
+            RED
+        ),
+
+        "closed": (
+            "⚪",
+            "𝘤𝘭𝘰𝘴𝘦𝘥",
+            GRAY
         )
+    }
 
-        color = GREEN
+    emoji, text, color = statuses[
+        status.value
+    ]
 
-        channel_name = "🟢-available"
+    embed = styled_embed(
+        f"{emoji}・𝘴𝘩𝘰𝘱 𝘴𝘵𝘢𝘵𝘶𝘴",
+        f"""
+Our shop is currently:
 
-    elif state.value == "busy":
+**{text}**
 
-        title = (
-            "🔴・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘣𝘶𝘴𝘺"
-        )
-
-        description = (
-            "Our shop is currently **BUSY**! ♡\n"
-            "Orders may take a little longer."
-        )
-
-        color = RED
-
-        channel_name = "🔴-busy"
-
-    else:
-
-        title = (
-            "⚪・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘤𝘭𝘰𝘴𝘦𝘥"
-        )
-
-        description = (
-            "Our shop is currently **CLOSED**! ♡"
-        )
-
-        color = GRAY
-
-        channel_name = "⚪-closed"
-
-    embed = discord.Embed(
-
-        title=title,
-
-        description=description,
-
-        color=color
+♡ ali's adm house
+        """,
+        color
     )
 
     await channel.send(
         embed=embed
     )
 
+    rename_map = {
+        "available": "🟢-available",
+        "busy": "🔴-busy",
+        "closed": "⚪-closed"
+    }
+
     pending_renames[
         channel.id
-    ] = channel_name
+    ] = rename_map[status.value]
 
     await interaction.response.send_message(
-
-        f"♡ Shop status changed to "
-        f"**{state.name}**.",
-
+        f"Status changed to **{text}**.",
         ephemeral=True
     )
 
 
 # =========================================================
-# SAY
+# SAY / ANNOUNCEMENT
 # =========================================================
 
 @bot.tree.command(
     name="say",
     description="Send an announcement."
 )
+@app_commands.describe(
+    channel="Channel to send the message",
+    message="Announcement message",
+    role="Optional role to mention"
+)
 async def say(
     interaction: discord.Interaction,
     channel: discord.TextChannel,
     message: str,
-    role: discord.Role | None = None
+    role: discord.Role = None
 ):
 
     if not is_staff(interaction):
 
-        return await interaction.response.send_message(
-
-            "❌ Only staff can use `/say`.",
-
+        await interaction.response.send_message(
+            "You don't have permission to use this.",
             ephemeral=True
         )
 
-    embed = discord.Embed(
+        return
 
-        title="𝘢𝘯𝘯𝘰𝘶𝘯𝘤𝘦𝘮𝘦𝘯𝘵",
+    embed = styled_embed(
+        "𝘢𝘯𝘯𝘰𝘶𝘯𝘤𝘦𝘮𝘦𝘯𝘵",
+        message
+    )
 
-        description=message,
-
-        color=PINK
+    content = (
+        role.mention
+        if role
+        else None
     )
 
     await channel.send(
-
-        content=(
-            role.mention
-            if role
-            else None
-        ),
-
-        embed=embed,
-
-        allowed_mentions=discord.AllowedMentions(
-            roles=True
-        )
+        content=content,
+        embed=embed
     )
 
     await interaction.response.send_message(
-
-        f"♡ Announcement sent to "
-        f"{channel.mention}.",
-
+        "Announcement sent! ♡",
         ephemeral=True
     )
 
@@ -2356,11 +2078,11 @@ async def say(
 
 @bot.tree.command(
     name="warn",
-    description="Warn a user."
+    description="Warn a member."
 )
 @app_commands.describe(
-    user="User to warn",
-    reason="Reason"
+    user="Member to warn",
+    reason="Reason for warning"
 )
 async def warn(
     interaction: discord.Interaction,
@@ -2370,60 +2092,56 @@ async def warn(
 
     if not is_staff(interaction):
 
-        return await interaction.response.send_message(
-
-            "❌ Only staff can warn users.",
-
+        await interaction.response.send_message(
+            "You don't have permission to use this.",
             ephemeral=True
         )
 
-    if user.id == interaction.user.id:
+        return
 
-        return await interaction.response.send_message(
+    if user == interaction.user:
 
-            "❌ You cannot warn yourself.",
-
+        await interaction.response.send_message(
+            "You can't warn yourself.",
             ephemeral=True
         )
+
+        return
 
     if (
-        interaction.user != interaction.guild.owner
-        and user.top_role >= interaction.user.top_role
+        user.top_role >= interaction.user.top_role
+        and interaction.guild.owner_id
+        != interaction.user.id
     ):
 
-        return await interaction.response.send_message(
-
-            "❌ You cannot warn someone with "
-            "an equal or higher role.",
-
+        await interaction.response.send_message(
+            "You can't warn someone with an equal or higher role.",
             ephemeral=True
         )
 
+        return
+
+    embed = styled_embed(
+        "⚠️・𝘸𝘢𝘳𝘯𝘪𝘯𝘨",
+        f"""
+You have received a warning in
+**{interaction.guild.name}**.
+
+**Reason**
+{reason}
+        """,
+        RED
+    )
+
     try:
-
         await user.send(
-
-            embed=discord.Embed(
-
-                title="⚠️ You have been warned",
-
-                description=(
-                    f"Reason: **{reason}**"
-                ),
-
-                color=RED
-            )
+            embed=embed
         )
-
-    except discord.Forbidden:
-
+    except Exception:
         pass
 
     await interaction.response.send_message(
-
-        f"⚠️ Warned {user.mention}.\n"
-        f"Reason: **{reason}**",
-
+        f"{user.mention} has been warned.",
         ephemeral=True
     )
 
@@ -2436,40 +2154,34 @@ async def warn(
     name="clear",
     description="Delete messages."
 )
+@app_commands.describe(
+    amount="Number of messages to delete"
+)
 async def clear(
     interaction: discord.Interaction,
-    amount: int
+    amount: app_commands.Range[int, 1, 100]
 ):
 
     if not is_staff(interaction):
 
-        return await interaction.response.send_message(
-
-            "❌ Only staff can clear messages.",
-
+        await interaction.response.send_message(
+            "You don't have permission to use this.",
             ephemeral=True
         )
 
-    if amount < 1 or amount > 100:
-
-        return await interaction.response.send_message(
-
-            "❌ Amount must be between 1 and 100.",
-
-            ephemeral=True
-        )
+        return
 
     if not isinstance(
         interaction.channel,
         discord.TextChannel
     ):
 
-        return await interaction.response.send_message(
-
-            "❌ This isn't a text channel.",
-
+        await interaction.response.send_message(
+            "This command can only be used in a text channel.",
             ephemeral=True
         )
+
+        return
 
     await interaction.response.defer(
         ephemeral=True
@@ -2482,19 +2194,14 @@ async def clear(
         )
 
         await interaction.followup.send(
-
-            f"🗑️ Deleted **{len(deleted)}** messages.",
-
+            f"Deleted **{len(deleted)}** messages. ♡",
             ephemeral=True
         )
 
-    except discord.Forbidden:
+    except Exception as e:
 
         await interaction.followup.send(
-
-            "❌ I don't have permission "
-            "to delete messages.",
-
+            f"Could not delete messages: `{e}`",
             ephemeral=True
         )
 
@@ -2505,7 +2212,11 @@ async def clear(
 
 @bot.tree.command(
     name="giverole",
-    description="Give a role to a user."
+    description="Give a role to a member."
+)
+@app_commands.describe(
+    user="Member",
+    role="Role to give"
 )
 async def giverole(
     interaction: discord.Interaction,
@@ -2515,58 +2226,62 @@ async def giverole(
 
     if not is_staff(interaction):
 
-        return await interaction.response.send_message(
-
-            "❌ Only staff can give roles.",
-
+        await interaction.response.send_message(
+            "You don't have permission to use this.",
             ephemeral=True
         )
+
+        return
 
     if role.is_default():
 
-        return await interaction.response.send_message(
-
-            "❌ You cannot give @everyone.",
-
+        await interaction.response.send_message(
+            "You can't give the @everyone role.",
             ephemeral=True
         )
+
+        return
 
     if (
-        interaction.guild.me
-        and role >= interaction.guild.me.top_role
+        role >= interaction.guild.me.top_role
     ):
 
-        return await interaction.response.send_message(
-
-            "❌ I cannot give that role because "
-            "it is too high.",
-
+        await interaction.response.send_message(
+            "My role is not high enough to give that role.",
             ephemeral=True
         )
+
+        return
+
+    if (
+        role >= interaction.user.top_role
+        and interaction.guild.owner_id
+        != interaction.user.id
+    ):
+
+        await interaction.response.send_message(
+            "You can't give a role equal to or higher than your highest role.",
+            ephemeral=True
+        )
+
+        return
 
     try:
 
         await user.add_roles(
             role,
-            reason=(
-                f"Given by {interaction.user}"
-            )
+            reason=f"Given by {interaction.user}"
         )
 
         await interaction.response.send_message(
-
-            f"✅ Gave {user.mention} "
-            f"{role.mention}.",
-
+            f"Added {role.mention} to {user.mention}. ♡",
             ephemeral=True
         )
 
-    except discord.Forbidden:
+    except Exception as e:
 
         await interaction.response.send_message(
-
-            "❌ I cannot give that role.",
-
+            f"Could not give role: `{e}`",
             ephemeral=True
         )
 
@@ -2577,83 +2292,63 @@ async def giverole(
 
 @bot.tree.command(
     name="mute",
-    description="Timeout a user for 10 minutes."
+    description="Timeout a member for 10 minutes."
+)
+@app_commands.describe(
+    user="Member to mute"
 )
 async def mute(
     interaction: discord.Interaction,
-    user: discord.Member,
-    reason: str = "No reason provided"
+    user: discord.Member
 ):
 
     if not is_staff(interaction):
 
-        return await interaction.response.send_message(
-
-            "❌ Only staff can mute users.",
-
+        await interaction.response.send_message(
+            "You don't have permission to use this.",
             ephemeral=True
         )
 
-    if user.id == interaction.user.id:
+        return
 
-        return await interaction.response.send_message(
+    if user == interaction.user:
 
-            "❌ You cannot mute yourself.",
-
+        await interaction.response.send_message(
+            "You can't mute yourself.",
             ephemeral=True
         )
+
+        return
 
     if (
-        interaction.user != interaction.guild.owner
-        and user.top_role >= interaction.user.top_role
+        user.top_role >= interaction.user.top_role
+        and interaction.guild.owner_id
+        != interaction.user.id
     ):
 
-        return await interaction.response.send_message(
-
-            "❌ You cannot mute someone with "
-            "an equal or higher role.",
-
+        await interaction.response.send_message(
+            "You can't mute someone with an equal or higher role.",
             ephemeral=True
         )
 
-    if (
-        interaction.guild.me
-        and user.top_role >= interaction.guild.me.top_role
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ I cannot mute that user.",
-
-            ephemeral=True
-        )
+        return
 
     try:
 
         await user.timeout(
-
-            discord.utils.utcnow()
-            + timedelta(minutes=10),
-
-            reason=reason
+            timedelta(minutes=10),
+            reason=f"Muted by {interaction.user}"
         )
 
         await interaction.response.send_message(
-
-            f"🔇 Muted {user.mention} for "
-            f"**10 minutes**.\n"
-            f"Reason: **{reason}**",
-
+            f"{user.mention} has been muted for 10 minutes.",
             ephemeral=True
         )
 
-    except discord.Forbidden:
+    except Exception as e:
 
         await interaction.response.send_message(
-
-            "❌ I don't have permission "
-            "to timeout that user.",
-
+            f"Could not mute user: `{e}`",
             ephemeral=True
         )
 
@@ -2664,7 +2359,11 @@ async def mute(
 
 @bot.tree.command(
     name="ban",
-    description="Ban a user."
+    description="Ban a member."
+)
+@app_commands.describe(
+    user="Member to ban",
+    reason="Ban reason"
 )
 async def ban(
     interaction: discord.Interaction,
@@ -2674,46 +2373,43 @@ async def ban(
 
     if not is_staff(interaction):
 
-        return await interaction.response.send_message(
-
-            "❌ Only staff can ban users.",
-
+        await interaction.response.send_message(
+            "You don't have permission to use this.",
             ephemeral=True
         )
 
-    if user.id == interaction.user.id:
+        return
 
-        return await interaction.response.send_message(
+    if user == interaction.user:
 
-            "❌ You cannot ban yourself.",
-
+        await interaction.response.send_message(
+            "You can't ban yourself.",
             ephemeral=True
         )
+
+        return
+
+    if user == interaction.guild.owner:
+
+        await interaction.response.send_message(
+            "You can't ban the server owner.",
+            ephemeral=True
+        )
+
+        return
 
     if (
-        interaction.user != interaction.guild.owner
-        and user.top_role >= interaction.user.top_role
+        user.top_role >= interaction.user.top_role
+        and interaction.guild.owner_id
+        != interaction.user.id
     ):
 
-        return await interaction.response.send_message(
-
-            "❌ You cannot ban someone with "
-            "an equal or higher role.",
-
+        await interaction.response.send_message(
+            "You can't ban someone with an equal or higher role.",
             ephemeral=True
         )
 
-    if (
-        interaction.guild.me
-        and user.top_role >= interaction.guild.me.top_role
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ I cannot ban that user.",
-
-            ephemeral=True
-        )
+        return
 
     try:
 
@@ -2723,20 +2419,14 @@ async def ban(
         )
 
         await interaction.response.send_message(
-
-            f"🚫 Banned {user.mention}.\n"
-            f"Reason: **{reason}**",
-
+            f"{user.mention} has been banned.",
             ephemeral=True
         )
 
-    except discord.Forbidden:
+    except Exception as e:
 
         await interaction.response.send_message(
-
-            "❌ I don't have permission "
-            "to ban that user.",
-
+            f"Could not ban user: `{e}`",
             ephemeral=True
         )
 
@@ -2747,7 +2437,11 @@ async def ban(
 
 @bot.tree.command(
     name="kick",
-    description="Kick a user."
+    description="Kick a member."
+)
+@app_commands.describe(
+    user="Member to kick",
+    reason="Kick reason"
 )
 async def kick(
     interaction: discord.Interaction,
@@ -2757,68 +2451,51 @@ async def kick(
 
     if not is_staff(interaction):
 
-        return await interaction.response.send_message(
-
-            "❌ Only staff can kick users.",
-
+        await interaction.response.send_message(
+            "You don't have permission to use this.",
             ephemeral=True
         )
 
-    if user.id == interaction.user.id:
+        return
 
-        return await interaction.response.send_message(
+    if user == interaction.user:
 
-            "❌ You cannot kick yourself.",
-
+        await interaction.response.send_message(
+            "You can't kick yourself.",
             ephemeral=True
         )
+
+        return
 
     if (
-        interaction.user != interaction.guild.owner
-        and user.top_role >= interaction.user.top_role
+        user.top_role >= interaction.user.top_role
+        and interaction.guild.owner_id
+        != interaction.user.id
     ):
 
-        return await interaction.response.send_message(
-
-            "❌ You cannot kick someone with "
-            "an equal or higher role.",
-
+        await interaction.response.send_message(
+            "You can't kick someone with an equal or higher role.",
             ephemeral=True
         )
 
-    if (
-        interaction.guild.me
-        and user.top_role >= interaction.guild.me.top_role
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ I cannot kick that user.",
-
-            ephemeral=True
-        )
+        return
 
     try:
 
-        await user.kick(
+        await interaction.guild.kick(
+            user,
             reason=reason
         )
 
         await interaction.response.send_message(
-
-            f"👢 Kicked {user.mention}.\n"
-            f"Reason: **{reason}**",
-
+            f"{user.mention} has been kicked.",
             ephemeral=True
         )
 
-    except discord.Forbidden:
+    except Exception as e:
 
         await interaction.response.send_message(
-
-            "❌ I don't have permission "
-            "to kick that user.",
-
+            f"Could not kick user: `{e}`",
             ephemeral=True
         )
 
@@ -2831,64 +2508,57 @@ async def kick(
     name="lockchannel",
     description="Lock a channel."
 )
+@app_commands.describe(
+    channel="Channel to lock",
+    reason="Reason for locking"
+)
 async def lockchannel(
     interaction: discord.Interaction,
-    channel: discord.TextChannel | None = None,
+    channel: discord.TextChannel = None,
     reason: str = "No reason provided"
 ):
 
     if not is_staff(interaction):
 
-        return await interaction.response.send_message(
-
-            "❌ Only staff can lock channels.",
-
+        await interaction.response.send_message(
+            "You don't have permission to use this.",
             ephemeral=True
         )
 
-    target = (
-        channel
-        or interaction.channel
-    )
+        return
+
+    if channel is None:
+        channel = interaction.channel
 
     if not isinstance(
-        target,
+        channel,
         discord.TextChannel
     ):
 
-        return await interaction.response.send_message(
-
-            "❌ Invalid text channel.",
-
+        await interaction.response.send_message(
+            "That is not a text channel.",
             ephemeral=True
         )
 
+        return
+
     try:
 
-        await target.set_permissions(
-
+        await channel.set_permissions(
             interaction.guild.default_role,
-
             send_messages=False,
-
             reason=reason
         )
 
         await interaction.response.send_message(
-
-            f"🔒 Locked {target.mention}.\n"
-            f"Reason: **{reason}**",
-
+            f"🔒 Locked {channel.mention}.",
             ephemeral=True
         )
 
-    except discord.Forbidden:
+    except Exception as e:
 
         await interaction.response.send_message(
-
-            "❌ I don't have permission "
-            "to lock that channel.",
-
+            f"Could not lock channel: `{e}`",
             ephemeral=True
         )
 
@@ -2901,64 +2571,57 @@ async def lockchannel(
     name="unlockchannel",
     description="Unlock a channel."
 )
+@app_commands.describe(
+    channel="Channel to unlock",
+    reason="Reason for unlocking"
+)
 async def unlockchannel(
     interaction: discord.Interaction,
-    channel: discord.TextChannel | None = None,
+    channel: discord.TextChannel = None,
     reason: str = "No reason provided"
 ):
 
     if not is_staff(interaction):
 
-        return await interaction.response.send_message(
-
-            "❌ Only staff can unlock channels.",
-
+        await interaction.response.send_message(
+            "You don't have permission to use this.",
             ephemeral=True
         )
 
-    target = (
-        channel
-        or interaction.channel
-    )
+        return
+
+    if channel is None:
+        channel = interaction.channel
 
     if not isinstance(
-        target,
+        channel,
         discord.TextChannel
     ):
 
-        return await interaction.response.send_message(
-
-            "❌ Invalid text channel.",
-
+        await interaction.response.send_message(
+            "That is not a text channel.",
             ephemeral=True
         )
 
+        return
+
     try:
 
-        await target.set_permissions(
-
+        await channel.set_permissions(
             interaction.guild.default_role,
-
             send_messages=True,
-
             reason=reason
         )
 
         await interaction.response.send_message(
-
-            f"🔓 Unlocked {target.mention}.\n"
-            f"Reason: **{reason}**",
-
+            f"🔓 Unlocked {channel.mention}.",
             ephemeral=True
         )
 
-    except discord.Forbidden:
+    except Exception as e:
 
         await interaction.response.send_message(
-
-            "❌ I don't have permission "
-            "to unlock that channel.",
-
+            f"Could not unlock channel: `{e}`",
             ephemeral=True
         )
 
@@ -2970,99 +2633,57 @@ async def unlockchannel(
 @bot.command(
     name="vouch"
 )
-async def vouch_prefix(
+async def prefix_vouch(
     ctx,
     *,
-    message: str = None
+    message: str
 ):
 
-    if message is None:
+    if not ctx.guild:
+        return
 
-        return await ctx.send(
-
-            "❌ Please include a vouch message!\n\n"
-            "Example:\n"
-            "`!vouch Great service! ♡`",
-
-            delete_after=10
-        )
-
-    channel_id = config.get(
+    vouch_channel_id = config.get(
         "vouch_channel_id"
     )
 
-    channel = (
-        ctx.guild.get_channel(
-            channel_id
-        )
-        if channel_id
-        and ctx.guild
-        else None
+    if not vouch_channel_id:
+        return
+
+    channel = ctx.guild.get_channel(
+        int(vouch_channel_id)
     )
 
-    if not isinstance(
-        channel,
-        discord.TextChannel
-    ):
+    if not channel:
+        return
 
-        return await ctx.send(
-            "❌ Vouch channel isn't configured."
-        )
+    embed = styled_embed(
+        "୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡",
+        f"""
+**Message**
+{message}
 
-    embed = discord.Embed(
-
-        title=(
-            "୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡"
-        ),
-
-        description=(
-            f"**{message}**\n\n"
-
-            "୨୧ **𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳**\n"
-            f"{ctx.author.mention}\n\n"
-
-            "Thank you so much! ♡"
-        ),
-
-        color=PINK
+**Customer**
+{ctx.author.mention}
+        """
     )
 
     embed.set_author(
-        name=(
-            "୨୧ 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦 ♡"
-        )
+        name="୨୧ 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦 ♡"
     )
 
     await channel.send(
-
         content=ctx.author.mention,
-
-        embed=embed,
-
-        allowed_mentions=discord.AllowedMentions(
-            users=[ctx.author]
-        )
+        embed=embed
     )
 
     try:
-
         await ctx.message.delete()
-
-    except discord.Forbidden:
-
+    except Exception:
         pass
-
-    await ctx.send(
-
-        f"♡ Thank you {ctx.author.mention}, "
-        "your vouch has been posted! ⭐",
-
-        delete_after=5
-    )
 
 
 # =========================================================
-# COMMAND ERRORS
+# PREFIX COMMAND ERROR
 # =========================================================
 
 @bot.event
@@ -3075,7 +2696,6 @@ async def on_command_error(
         error,
         commands.CommandNotFound
     ):
-
         return
 
     print(
@@ -3083,10 +2703,14 @@ async def on_command_error(
     )
 
 
+# =========================================================
+# SLASH COMMAND ERROR
+# =========================================================
+
 @bot.tree.error
 async def on_app_command_error(
     interaction: discord.Interaction,
-    error: app_commands.AppCommandError
+    error
 ):
 
     print(
@@ -3098,28 +2722,21 @@ async def on_app_command_error(
         if interaction.response.is_done():
 
             await interaction.followup.send(
-
-                "❌ Something went wrong "
-                "while running that command.",
-
+                "Something went wrong while running that command.",
                 ephemeral=True
             )
 
         else:
 
             await interaction.response.send_message(
-
-                "❌ Something went wrong "
-                "while running that command.",
-
+                "Something went wrong while running that command.",
                 ephemeral=True
             )
 
-    except Exception as send_error:
+    except Exception as e:
 
         print(
-            f"Could not send error message: "
-            f"{send_error}"
+            f"Could not send slash error: {e}"
         )
 
 
