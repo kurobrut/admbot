@@ -2814,7 +2814,16 @@ async def say(
     interaction: discord.Interaction,
     channel: discord.TextChannel,
     message: str,
-    role: discord.Role | None = None
+    role1: discord.Role | None = None,
+    role2: discord.Role | None = None,
+    role3: discord.Role | None = None,
+    role4: discord.Role | None = None,
+    role5: discord.Role | None = None,
+    role6: discord.Role | None = None,
+    role7: discord.Role | None = None,
+    role8: discord.Role | None = None,
+    role9: discord.Role | None = None,
+    role10: discord.Role | None = None
 ):
 
     if not is_staff(interaction):
@@ -2825,6 +2834,22 @@ async def say(
 
             ephemeral=True
         )
+
+    roles = [
+        role for role in (
+            role1,
+            role2,
+            role3,
+            role4,
+            role5,
+            role6,
+            role7,
+            role8,
+            role9,
+            role10
+        )
+        if role is not None
+    ]
 
     embed = discord.Embed(
 
@@ -2838,8 +2863,8 @@ async def say(
     await channel.send(
 
         content=(
-            role.mention
-            if role
+            " ".join(role.mention for role in roles)
+            if roles
             else None
         ),
 
