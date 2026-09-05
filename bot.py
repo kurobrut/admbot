@@ -169,18 +169,28 @@ def is_staff(interaction: discord.Interaction):
 # BLACK HIGHLIGHTED TEXT BLUR
 # =========================================================
 #
-# This version specifically targets:
+# Targets large bold black text such as:
 #
-#     BLACK / VERY DARK TEXT
-#     ON LIGHT/WHITE BACKGROUNDS
+#     SavvyS122994
 #
-# It does NOT intentionally blur every dark object.
+# It does NOT simply blur every dark pixel.
 #
-# The screenshot example:
+# The detector:
+# - Uses OCR first
+# - Checks actual black pixels
+# - Requires large text
+# - Checks for a light surrounding background
+# - Selects the strongest matching text only
+# - Uses tight padding
 #
-#     mc444z
-#
-# is exactly the type of text this detector is designed for.
+# This prevents:
+# - View button
+# - Report button
+# - gray boxes
+# - refresh icon
+# - borders
+# - date/time
+# from being blurred.
 # =========================================================
 
 def blur_proof_text(
@@ -190,7 +200,7 @@ def blur_proof_text(
 
     try:
 
-        print("[PROOF] Starting black-text scan...")
+        print("[PROOF] Starting large black-text scan...")
 
         original = Image.open(
             io.BytesIO(image_data)
@@ -223,481 +233,821 @@ def blur_proof_text(
         )
 
         # -------------------------------------------------
-        # OCR PASSES
+        # OCR CANDIDATES
         # -------------------------------------------------
 
-        ocr_regions = []
+        candidates = []
 
-        ocr_images = [
-            enlarged,
-            cv2.threshold(
+        ocr_variants = [
+            (
                 enlarged,
-                0,
-                255,
-                cv2.THRESH_BINARY + cv2.THRESH_OTSU
-            )[1],
-            cv2.adaptiveThreshold(
+                "--oem 3 --psm 11"
+            ),
+            (
+                cv2.threshold(
+                    enlarged,
+                    0,
+                    255,
+                    cv2.THRESH_BINARY + cv2.THRESH_OTSU
+                )[1],
+                "--oem 3 --psm 11"
+            ),
+            (
+                cv2.adaptiveThreshold(
+                    enlarged,
+                    255,
+                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                    cv2.THRESH_BINARY,
+                    31,
+                    9
+                ),
+                "--oem 3 --psm 11"
+            ),
+            (
                 enlarged,
-                255,
-                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY,
-                31,
-                11
+                "--oem 3 --psm 12"
             )
         ]
 
-        ocr_configs = [
-            "--oem 3 --psm 6",
-            "--oem 3 --psm 11",
-            "--oem 3 --psm 12"
-        ]
+        for processed, ocr_config in ocr_variants:
 
-        for processed in ocr_images:
+            try:
 
-            for ocr_config in ocr_configs:
+                data = pytesseract.image_to_data(
+                    processed,
+                    config=ocr_config,
+                    output_type=pytesseract.Output.DICT
+                )
+
+            except Exception as e:
+
+                print(
+                    f"[PROOF] OCR error: {e}"
+                )
+
+                continue
+
+            texts = data.get("text", [])
+            lefts = data.get("left", [])
+            tops = data.get("top", [])
+            widths = data.get("width", [])
+            heights = data.get("height", [])
+            confs = data.get("conf", [])
+
+            for i in range(len(texts)):
+
+                text = str(
+                    texts[i]
+                ).strip()
+
+                if not text:
+                    continue
+
+                if len(text) < 2:
+                    continue
 
                 try:
 
-                    data = pytesseract.image_to_data(
-                        processed,
-                        config=ocr_config,
-                        output_type=pytesseract.Output.DICT
+                    confidence = float(
+                        confs[i]
                     )
 
-                except Exception as e:
+                except Exception:
 
-                    print(
-                        f"[PROOF] OCR error: {e}"
+                    confidence = 0
+
+                # Stronger OCR requirement.
+                if confidence < 35:
+                    continue
+
+                try:
+
+                    x = int(
+                        lefts[i] / scale
                     )
+
+                    y = int(
+                        tops[i] / scale
+                    )
+
+                    w = int(
+                        widths[i] / scale
+                    )
+
+                    h = int(
+                        heights[i] / scale
+                    )
+
+                except Exception:
 
                     continue
 
-                texts = data.get("text", [])
-                lefts = data.get("left", [])
-                tops = data.get("top", [])
-                widths = data.get("width", [])
-                heights = data.get("height", [])
-                confs = data.get("conf", [])
+                if w <= 0 or h <= 0:
+                    continue
 
-                for i in range(len(texts)):
+                if x < 0 or y < 0:
+                    continue
 
-                    text = str(
-                        texts[i]
-                    ).strip()
+                if x >= width or y >= height:
+                    continue
 
-                    if not text:
-                        continue
+                x2 = min(
+                    width,
+                    x + w
+                )
 
-                    try:
-                        confidence = float(
-                            confs[i]
-                        )
-                    except Exception:
-                        confidence = 0
-
-                    if confidence < 5:
-                        continue
-
-                    try:
-
-                        x = int(
-                            lefts[i] / scale
-                        )
-
-                        y = int(
-                            tops[i] / scale
-                        )
-
-                        w = int(
-                            widths[i] / scale
-                        )
-
-                        h = int(
-                            heights[i] / scale
-                        )
-
-                    except Exception:
-                        continue
-
-                    if w < 4 or h < 3:
-                        continue
-
-                    if w > width * 0.60:
-                        continue
-
-                    if h > height * 0.12:
-                        continue
-
-                    ocr_regions.append(
-                        (
-                            x,
-                            y,
-                            x + w,
-                            y + h,
-                            text
-                        )
-                    )
-
-        print(
-            f"[PROOF] OCR candidates: {len(ocr_regions)}"
-        )
-
-        # -------------------------------------------------
-        # BLACK TEXT PIXEL MASK
-        # -------------------------------------------------
-        #
-        # The key part:
-        #
-        # Only very dark pixels are selected.
-        #
-        # This avoids most gray UI elements.
-        # -------------------------------------------------
-
-        black_mask = cv2.inRange(
-            gray,
-            0,
-            85
-        )
-
-        # -------------------------------------------------
-        # REMOVE TINY NOISE
-        # -------------------------------------------------
-
-        black_mask = cv2.morphologyEx(
-            black_mask,
-            cv2.MORPH_OPEN,
-            cv2.getStructuringElement(
-                cv2.MORPH_RECT,
-                (2, 2)
-            )
-        )
-
-        # -------------------------------------------------
-        # CONNECT LETTERS HORIZONTALLY
-        # -------------------------------------------------
-
-        text_kernel = cv2.getStructuringElement(
-            cv2.MORPH_RECT,
-            (11, 3)
-        )
-
-        grouped_text = cv2.morphologyEx(
-            black_mask,
-            cv2.MORPH_CLOSE,
-            text_kernel,
-            iterations=1
-        )
-
-        # -------------------------------------------------
-        # FIND BLACK REGIONS
-        # -------------------------------------------------
-
-        contours, _ = cv2.findContours(
-            grouped_text,
-            cv2.RETR_EXTERNAL,
-            cv2.CHAIN_APPROX_SIMPLE
-        )
-
-        visual_regions = []
-
-        for contour in contours:
-
-            x, y, w, h = cv2.boundingRect(
-                contour
-            )
-
-            area = w * h
-
-            # Ignore tiny noise.
-            if w < 6:
-                continue
-
-            if h < 4:
-                continue
-
-            if area < 30:
-                continue
-
-            # Ignore huge areas.
-            if w > width * 0.65:
-                continue
-
-            if h > height * 0.10:
-                continue
-
-            aspect = w / max(h, 1)
-
-            # Text is normally wider than it is tall.
-            if aspect < 0.8:
-                continue
-
-            # -------------------------------------------------
-            # CHECK SURROUNDING BACKGROUND
-            # -------------------------------------------------
-            #
-            # This is important.
-            #
-            # A dark icon on a gray background should not
-            # automatically be considered black text.
-            #
-            # We check whether the area around the candidate
-            # is substantially lighter than the candidate.
-            # -------------------------------------------------
-
-            pad = 6
-
-            sx1 = max(
-                0,
-                x - pad
-            )
-
-            sy1 = max(
-                0,
-                y - pad
-            )
-
-            sx2 = min(
-                width,
-                x + w + pad
-            )
-
-            sy2 = min(
-                height,
-                y + h + pad
-            )
-
-            candidate = gray[
-                y:y + h,
-                x:x + w
-            ]
-
-            surrounding = gray[
-                sy1:sy2,
-                sx1:sx2
-            ]
-
-            if candidate.size == 0:
-                continue
-
-            if surrounding.size == 0:
-                continue
-
-            candidate_mean = float(
-                np.mean(candidate)
-            )
-
-            surrounding_mean = float(
-                np.mean(surrounding)
-            )
-
-            # Black text should normally be dark while
-            # its surrounding card is considerably lighter.
-            if candidate_mean > 115:
-                continue
-
-            if surrounding_mean < 145:
-                continue
-
-            if surrounding_mean - candidate_mean < 35:
-                continue
-
-            visual_regions.append(
-                (
-                    x,
-                    y,
-                    x + w,
+                y2 = min(
+                    height,
                     y + h
                 )
-            )
 
-        print(
-            f"[PROOF] Black visual candidates: "
-            f"{len(visual_regions)}"
-        )
+                w = x2 - x
+                h = y2 - y
 
-        # -------------------------------------------------
-        # COMBINE OCR + VISUAL DETECTION
-        # -------------------------------------------------
+                # -------------------------------------------------
+                # LARGE TEXT REQUIREMENTS
+                # -------------------------------------------------
 
-        regions = []
-
-        for x1, y1, x2, y2 in visual_regions:
-
-            regions.append(
-                {
-                    "x1": x1,
-                    "y1": y1,
-                    "x2": x2,
-                    "y2": y2,
-                    "source": "black"
-                }
-            )
-
-        # OCR is used only when the OCR box itself contains
-        # enough dark pixels.
-        for x1, y1, x2, y2, text in ocr_regions:
-
-            x1 = max(0, x1)
-            y1 = max(0, y1)
-            x2 = min(width, x2)
-            y2 = min(height, y2)
-
-            if x2 <= x1 or y2 <= y1:
-                continue
-
-            candidate = gray[
-                y1:y2,
-                x1:x2
-            ]
-
-            if candidate.size == 0:
-                continue
-
-            dark_pixels = np.sum(
-                candidate <= 100
-            )
-
-            total_pixels = candidate.size
-
-            dark_ratio = (
-                dark_pixels
-                / max(total_pixels, 1)
-            )
-
-            # OCR detections are accepted only if the
-            # detected region actually contains dark text.
-            if dark_ratio < 0.03:
-                continue
-
-            regions.append(
-                {
-                    "x1": x1,
-                    "y1": y1,
-                    "x2": x2,
-                    "y2": y2,
-                    "source": "ocr"
-                }
-            )
-
-        print(
-            f"[PROOF] Combined regions: {len(regions)}"
-        )
-
-        # -------------------------------------------------
-        # MERGE OVERLAPPING REGIONS
-        # -------------------------------------------------
-
-        changed = True
-
-        while changed:
-
-            changed = False
-            merged = []
-            used = [False] * len(regions)
-
-            for i, a in enumerate(regions):
-
-                if used[i]:
+                if w < 35:
                     continue
 
-                current = {
-                    "x1": a["x1"],
-                    "y1": a["y1"],
-                    "x2": a["x2"],
-                    "y2": a["y2"]
-                }
+                if h < 11:
+                    continue
 
-                used[i] = True
+                if w > width * 0.55:
+                    continue
 
-                for j in range(i + 1, len(regions)):
+                if h > height * 0.15:
+                    continue
 
-                    if used[j]:
-                        continue
+                aspect = w / max(h, 1)
 
-                    b = regions[j]
+                if aspect < 1.8:
+                    continue
 
-                    ax1 = current["x1"]
-                    ay1 = current["y1"]
-                    ax2 = current["x2"]
-                    ay2 = current["y2"]
+                # -------------------------------------------------
+                # ACTUAL PIXEL CHECK
+                # -------------------------------------------------
 
-                    bx1 = b["x1"]
-                    by1 = b["y1"]
-                    bx2 = b["x2"]
-                    by2 = b["y2"]
+                candidate = gray[
+                    y:y2,
+                    x:x2
+                ]
 
-                    # Gap between boxes.
-                    horizontal_gap = max(
-                        0,
-                        max(bx1 - ax2, ax1 - bx2)
+                if candidate.size == 0:
+                    continue
+
+                dark_ratio = float(
+                    np.mean(
+                        candidate <= 100
                     )
-
-                    vertical_gap = max(
-                        0,
-                        max(by1 - ay2, ay1 - by2)
-                    )
-
-                    overlap_x = min(
-                        ax2,
-                        bx2
-                    ) - max(
-                        ax1,
-                        bx1
-                    )
-
-                    overlap_y = min(
-                        ay2,
-                        by2
-                    ) - max(
-                        ay1,
-                        by1
-                    )
-
-                    # Merge if they overlap or are close on
-                    # the same text line.
-                    same_line = (
-                        horizontal_gap <= 14
-                        and vertical_gap <= 8
-                    )
-
-                    overlaps = (
-                        overlap_x > 0
-                        and overlap_y > 0
-                    )
-
-                    if same_line or overlaps:
-
-                        current["x1"] = min(
-                            current["x1"],
-                            bx1
-                        )
-
-                        current["y1"] = min(
-                            current["y1"],
-                            by1
-                        )
-
-                        current["x2"] = max(
-                            current["x2"],
-                            bx2
-                        )
-
-                        current["y2"] = max(
-                            current["y2"],
-                            by2
-                        )
-
-                        used[j] = True
-                        changed = True
-
-                merged.append(
-                    current
                 )
 
-            regions = merged
+                black_ratio = float(
+                    np.mean(
+                        candidate <= 75
+                    )
+                )
+
+                # The target is genuinely black.
+                if dark_ratio < 0.06:
+                    continue
+
+                if black_ratio < 0.025:
+                    continue
+
+                # -------------------------------------------------
+                # LIGHT BACKGROUND CHECK
+                # -------------------------------------------------
+
+                pad = max(
+                    5,
+                    int(h * 0.7)
+                )
+
+                sx1 = max(
+                    0,
+                    x - pad
+                )
+
+                sy1 = max(
+                    0,
+                    y - pad
+                )
+
+                sx2 = min(
+                    width,
+                    x2 + pad
+                )
+
+                sy2 = min(
+                    height,
+                    y2 + pad
+                )
+
+                surrounding = gray[
+                    sy1:sy2,
+                    sx1:sx2
+                ]
+
+                if surrounding.size == 0:
+                    continue
+
+                surrounding_mean = float(
+                    np.mean(
+                        surrounding
+                    )
+                )
+
+                candidate_mean = float(
+                    np.mean(
+                        candidate
+                    )
+                )
+
+                # Target is on a light card/background.
+                if surrounding_mean < 135:
+                    continue
+
+                if (
+                    surrounding_mean
+                    -
+                    candidate_mean
+                    < 35
+                ):
+                    continue
+
+                # -------------------------------------------------
+                # SCORE
+                # -------------------------------------------------
+
+                score = 0
+
+                if h >= 16:
+                    score += 3
+
+                elif h >= 13:
+                    score += 2
+
+                if w >= 70:
+                    score += 2
+
+                if w >= 100:
+                    score += 2
+
+                if aspect >= 3:
+                    score += 1
+
+                if dark_ratio >= 0.10:
+                    score += 2
+
+                if black_ratio >= 0.05:
+                    score += 2
+
+                if confidence >= 60:
+                    score += 2
+
+                candidates.append(
+                    {
+                        "x1": x,
+                        "y1": y,
+                        "x2": x2,
+                        "y2": y2,
+                        "text": text,
+                        "confidence": confidence,
+                        "dark_ratio": dark_ratio,
+                        "black_ratio": black_ratio,
+                        "score": score
+                    }
+                )
+
+        print(
+            f"[PROOF] OCR candidates: "
+            f"{len(candidates)}"
+        )
 
         # -------------------------------------------------
-        # CREATE FINAL MASK
+        # REMOVE DUPLICATES
+        # -------------------------------------------------
+
+        unique = []
+
+        for candidate in candidates:
+
+            duplicate = False
+
+            for existing in unique:
+
+                ax1 = candidate["x1"]
+                ay1 = candidate["y1"]
+                ax2 = candidate["x2"]
+                ay2 = candidate["y2"]
+
+                bx1 = existing["x1"]
+                by1 = existing["y1"]
+                bx2 = existing["x2"]
+                by2 = existing["y2"]
+
+                ix1 = max(
+                    ax1,
+                    bx1
+                )
+
+                iy1 = max(
+                    ay1,
+                    by1
+                )
+
+                ix2 = min(
+                    ax2,
+                    bx2
+                )
+
+                iy2 = min(
+                    ay2,
+                    by2
+                )
+
+                if ix2 <= ix1 or iy2 <= iy1:
+                    continue
+
+                intersection = (
+                    (ix2 - ix1)
+                    *
+                    (iy2 - iy1)
+                )
+
+                area_a = (
+                    (ax2 - ax1)
+                    *
+                    (ay2 - ay1)
+                )
+
+                area_b = (
+                    (bx2 - bx1)
+                    *
+                    (by2 - by1)
+                )
+
+                smaller_area = min(
+                    area_a,
+                    area_b
+                )
+
+                overlap_ratio = (
+                    intersection
+                    /
+                    max(smaller_area, 1)
+                )
+
+                if overlap_ratio > 0.50:
+
+                    duplicate = True
+
+                    if (
+                        candidate["score"]
+                        >
+                        existing["score"]
+                    ):
+
+                        existing.update(
+                            candidate
+                        )
+
+                    break
+
+            if not duplicate:
+                unique.append(
+                    candidate
+                )
+
+        candidates = unique
+
+        print(
+            f"[PROOF] Unique candidates: "
+            f"{len(candidates)}"
+        )
+
+        # -------------------------------------------------
+        # SORT BY STRENGTH
+        # -------------------------------------------------
+
+        candidates.sort(
+            key=lambda item: (
+                item["score"],
+                item["confidence"],
+                item["black_ratio"],
+                item["dark_ratio"]
+            ),
+            reverse=True
+        )
+
+        # -------------------------------------------------
+        # SELECT STRONGEST TARGET ONLY
+        # -------------------------------------------------
+
+        selected = None
+
+        if candidates:
+
+            selected = candidates[0]
+
+            print(
+                "[PROOF] Selected target:"
+                f" {selected['text']}"
+                f" | score={selected['score']}"
+                f" | confidence="
+                f"{selected['confidence']:.1f}"
+                f" | box=("
+                f"{selected['x1']},"
+                f"{selected['y1']},"
+                f"{selected['x2']},"
+                f"{selected['y2']})"
+            )
+
+        # -------------------------------------------------
+        # CHARACTER LEVEL FALLBACK
+        # -------------------------------------------------
+
+        if selected is None:
+
+            print(
+                "[PROOF] Normal OCR failed."
+                " Trying character OCR..."
+            )
+
+            try:
+
+                boxes = pytesseract.image_to_boxes(
+                    enlarged,
+                    config="--oem 3 --psm 11"
+                )
+
+                chars = []
+
+                for line in boxes.splitlines():
+
+                    parts = line.split()
+
+                    if len(parts) < 6:
+                        continue
+
+                    char = parts[0]
+
+                    try:
+
+                        bx1 = int(
+                            int(parts[1]) / scale
+                        )
+
+                        by_bottom = int(
+                            int(parts[2]) / scale
+                        )
+
+                        bx2 = int(
+                            int(parts[3]) / scale
+                        )
+
+                        by_top = int(
+                            int(parts[4]) / scale
+                        )
+
+                    except Exception:
+
+                        continue
+
+                    # Tesseract coordinates are bottom-up.
+                    cy1 = (
+                        height
+                        -
+                        by_top
+                    )
+
+                    cy2 = (
+                        height
+                        -
+                        by_bottom
+                    )
+
+                    cw = bx2 - bx1
+                    ch = cy2 - cy1
+
+                    if cw < 2:
+                        continue
+
+                    if ch < 7:
+                        continue
+
+                    chars.append(
+                        (
+                            bx1,
+                            cy1,
+                            bx2,
+                            cy2,
+                            char
+                        )
+                    )
+
+                chars.sort(
+                    key=lambda item: (
+                        item[1],
+                        item[0]
+                    )
+                )
+
+                lines = []
+
+                for char in chars:
+
+                    cx = (
+                        char[0]
+                        +
+                        char[2]
+                    ) / 2
+
+                    cy = (
+                        char[1]
+                        +
+                        char[3]
+                    ) / 2
+
+                    placed = False
+
+                    for line in lines:
+
+                        average_y = np.mean(
+                            [
+                                (
+                                    c[1]
+                                    +
+                                    c[3]
+                                ) / 2
+                                for c in line
+                            ]
+                        )
+
+                        if abs(
+                            cy - average_y
+                        ) <= 10:
+
+                            line.append(
+                                char
+                            )
+
+                            placed = True
+                            break
+
+                    if not placed:
+
+                        lines.append(
+                            [char]
+                        )
+
+                best = None
+                best_score = 0
+
+                for line in lines:
+
+                    if len(line) < 4:
+                        continue
+
+                    line.sort(
+                        key=lambda item: item[0]
+                    )
+
+                    lx1 = min(
+                        c[0]
+                        for c in line
+                    )
+
+                    ly1 = min(
+                        c[1]
+                        for c in line
+                    )
+
+                    lx2 = max(
+                        c[2]
+                        for c in line
+                    )
+
+                    ly2 = max(
+                        c[3]
+                        for c in line
+                    )
+
+                    lw = lx2 - lx1
+                    lh = ly2 - ly1
+
+                    if lw < 50:
+                        continue
+
+                    if lh < 12:
+                        continue
+
+                    if lw / max(lh, 1) < 2:
+                        continue
+
+                    candidate = gray[
+                        ly1:ly2,
+                        lx1:lx2
+                    ]
+
+                    if candidate.size == 0:
+                        continue
+
+                    dark_ratio = float(
+                        np.mean(
+                            candidate <= 100
+                        )
+                    )
+
+                    black_ratio = float(
+                        np.mean(
+                            candidate <= 75
+                        )
+                    )
+
+                    if dark_ratio < 0.07:
+                        continue
+
+                    if black_ratio < 0.025:
+                        continue
+
+                    pad = 6
+
+                    sx1 = max(
+                        0,
+                        lx1 - pad
+                    )
+
+                    sy1 = max(
+                        0,
+                        ly1 - pad
+                    )
+
+                    sx2 = min(
+                        width,
+                        lx2 + pad
+                    )
+
+                    sy2 = min(
+                        height,
+                        ly2 + pad
+                    )
+
+                    surrounding = gray[
+                        sy1:sy2,
+                        sx1:sx2
+                    ]
+
+                    if surrounding.size == 0:
+                        continue
+
+                    surrounding_mean = float(
+                        np.mean(
+                            surrounding
+                        )
+                    )
+
+                    candidate_mean = float(
+                        np.mean(
+                            candidate
+                        )
+                    )
+
+                    if surrounding_mean < 135:
+                        continue
+
+                    if (
+                        surrounding_mean
+                        -
+                        candidate_mean
+                        < 35
+                    ):
+                        continue
+
+                    score = (
+                        len(line) * 2
+                        +
+                        int(lw / 30)
+                        +
+                        int(lh / 5)
+                    )
+
+                    if dark_ratio >= 0.12:
+                        score += 3
+
+                    if black_ratio >= 0.05:
+                        score += 3
+
+                    if score > best_score:
+
+                        best_score = score
+
+                        best = {
+                            "x1": lx1,
+                            "y1": ly1,
+                            "x2": lx2,
+                            "y2": ly2,
+                            "text": "",
+                            "score": score
+                        }
+
+                if best is not None:
+
+                    selected = best
+
+                    print(
+                        "[PROOF] Character OCR selected:"
+                        f" box=("
+                        f"{best['x1']},"
+                        f"{best['y1']},"
+                        f"{best['x2']},"
+                        f"{best['y2']})"
+                    )
+
+            except Exception as e:
+
+                print(
+                    f"[PROOF] Character OCR error: {e}"
+                )
+
+        # -------------------------------------------------
+        # NO TARGET
+        # -------------------------------------------------
+
+        if selected is None:
+
+            print(
+                "[PROOF] No target text found."
+            )
+
+            # NEVER mass blur the proof.
+            return image_data
+
+        # -------------------------------------------------
+        # TARGET BOX
+        # -------------------------------------------------
+
+        x1 = int(
+            selected["x1"]
+        )
+
+        y1 = int(
+            selected["y1"]
+        )
+
+        x2 = int(
+            selected["x2"]
+        )
+
+        y2 = int(
+            selected["y2"]
+        )
+
+        rw = x2 - x1
+        rh = y2 - y1
+
+        if rw <= 0 or rh <= 0:
+            return image_data
+
+        # -------------------------------------------------
+        # VERY TIGHT PADDING
+        # -------------------------------------------------
+
+        # Only enough to cover the username.
+        pad_x = max(
+            3,
+            int(rw * 0.025)
+        )
+
+        pad_y = max(
+            3,
+            int(rh * 0.20)
+        )
+
+        bx1 = max(
+            0,
+            x1 - pad_x
+        )
+
+        by1 = max(
+            0,
+            y1 - pad_y
+        )
+
+        bx2 = min(
+            width,
+            x2 + pad_x
+        )
+
+        by2 = min(
+            height,
+            y2 + pad_y
+        )
+
+        # -------------------------------------------------
+        # MASK
         # -------------------------------------------------
 
         mask = np.zeros(
@@ -705,128 +1055,34 @@ def blur_proof_text(
             dtype=np.uint8
         )
 
-        accepted = 0
-
-        for region in regions:
-
-            x1 = int(region["x1"])
-            y1 = int(region["y1"])
-            x2 = int(region["x2"])
-            y2 = int(region["y2"])
-
-            rw = x2 - x1
-            rh = y2 - y1
-
-            if rw < 5 or rh < 3:
-                continue
-
-            # -------------------------------------------------
-            # EXTRA CHECK:
-            # REGION MUST ACTUALLY CONTAIN DARK PIXELS.
-            # -------------------------------------------------
-
-            check = gray[
-                max(0, y1):min(height, y2),
-                max(0, x1):min(width, x2)
-            ]
-
-            if check.size == 0:
-                continue
-
-            dark_ratio = np.mean(
-                check <= 110
-            )
-
-            if dark_ratio < 0.02:
-                continue
-
-            # -------------------------------------------------
-            # PADDING
-            # -------------------------------------------------
-
-            # Enough padding to cover the complete black
-            # username, including bold edges.
-            pad_x = max(
-                5,
-                int(rw * 0.18)
-            )
-
-            pad_y = max(
-                4,
-                int(rh * 0.45)
-            )
-
-            bx1 = max(
-                0,
-                x1 - pad_x
-            )
-
-            by1 = max(
-                0,
-                y1 - pad_y
-            )
-
-            bx2 = min(
-                width,
-                x2 + pad_x
-            )
-
-            by2 = min(
-                height,
-                y2 + pad_y
-            )
-
-            cv2.rectangle(
-                mask,
-                (bx1, by1),
-                (bx2, by2),
-                255,
-                -1
-            )
-
-            accepted += 1
-
-        print(
-            f"[PROOF] Final black-text regions: "
-            f"{accepted}"
+        cv2.rectangle(
+            mask,
+            (bx1, by1),
+            (bx2, by2),
+            255,
+            -1
         )
 
-        # -------------------------------------------------
-        # DON'T MASS-BLUR THE IMAGE
-        # -------------------------------------------------
-        #
-        # Only the detected black text gets blurred.
-        # -------------------------------------------------
-
-        if accepted == 0:
-
-            print(
-                "[PROOF] No black highlighted text found."
-            )
-
-            return image_data
-
-        # Slight mask expansion to cover antialiased edges.
+        # Tiny expansion for antialiased edges.
         mask = cv2.dilate(
             mask,
             cv2.getStructuringElement(
                 cv2.MORPH_ELLIPSE,
-                (5, 5)
+                (3, 3)
             ),
             iterations=1
         )
 
         # -------------------------------------------------
-        # STRONG LOCAL BLUR
+        # BLUR
         # -------------------------------------------------
 
         blurred = original.filter(
             ImageFilter.GaussianBlur(
-                radius=38
+                radius=25
             )
         )
 
-        # Soft edge around the blurred region.
         mask_image = Image.fromarray(
             mask,
             mode="L"
@@ -834,33 +1090,13 @@ def blur_proof_text(
 
         mask_image = mask_image.filter(
             ImageFilter.GaussianBlur(
-                radius=1.5
+                radius=0.8
             )
         )
-
-        # -------------------------------------------------
-        # COMPOSITE
-        # -------------------------------------------------
 
         result = Image.composite(
             blurred,
             original,
-            mask_image
-        )
-
-        # -------------------------------------------------
-        # EXTRA BLUR PASS
-        # -------------------------------------------------
-
-        extra_blur = result.filter(
-            ImageFilter.GaussianBlur(
-                radius=12
-            )
-        )
-
-        result = Image.composite(
-            extra_blur,
-            result,
             mask_image
         )
 
@@ -878,7 +1114,7 @@ def blur_proof_text(
         output.seek(0)
 
         print(
-            "[PROOF] Black highlighted text blurred successfully."
+            "[PROOF] Target text blurred successfully."
         )
 
         return output.getvalue()
