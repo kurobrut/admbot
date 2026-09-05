@@ -2414,59 +2414,41 @@ async def ping(
 
 @bot.tree.command(
     name="proof",
-    description="Submit proof screenshots."
+    description="Upload a proof image."
 )
 @app_commands.describe(
-    image="Upload your first proof screenshot",
-    image2="Upload your second proof screenshot (optional)"
+    image="Proof image"
 )
 async def proof(
     interaction: discord.Interaction,
-    image: discord.Attachment,
-    image2: discord.Attachment | None = None
+    image: discord.Attachment
 ):
 
     proof_channel_id = config.get(
         "proof_channel_id"
     )
 
-    proof_channel = (
-        interaction.guild.get_channel(
-            proof_channel_id
-        )
-        if proof_channel_id
-        and interaction.guild
-        else None
-    )
+    if not proof_channel_id:
 
-    if not isinstance(
-        proof_channel,
-        discord.TextChannel
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ The proof channel hasn't "
-            "been configured yet.\n\n"
-
-            "Ask an administrator to use "
-            "`/setupproof`.",
-
+        await interaction.response.send_message(
+            "Proof channel is not configured.",
             ephemeral=True
         )
 
-    # =====================================================
-    # IMAGE VALIDATION
-    # =====================================================
+        return
 
-    images = [
-        image
-    ]
+    proof_channel = interaction.guild.get_channel(
+        int(proof_channel_id)
+    )
 
-    if image2:
-        images.append(
-            image2
+    if not proof_channel:
+
+        await interaction.response.send_message(
+            "Proof channel could not be found.",
+            ephemeral=True
         )
+
+        return
 
     valid_extensions = (
         ".png",
@@ -2475,36 +2457,23 @@ async def proof(
         ".webp"
     )
 
-    for uploaded_image in images:
+    content_type = (
+        image.content_type or ""
+    ).lower()
 
-        if not uploaded_image.content_type:
+    filename = image.filename.lower()
 
-            filename = (
-                uploaded_image.filename.lower()
-            )
+    if not (
+        content_type.startswith("image/")
+        or filename.endswith(valid_extensions)
+    ):
 
-            if not filename.endswith(
-                valid_extensions
-            ):
+        await interaction.response.send_message(
+            "Please upload a PNG, JPG, JPEG, or WEBP image.",
+            ephemeral=True
+        )
 
-                return await interaction.response.send_message(
-
-                    "❌ Please upload valid image files "
-                    "(.png, .jpg, .jpeg, or .webp).",
-
-                    ephemeral=True
-                )
-
-        elif not uploaded_image.content_type.startswith(
-            "image/"
-        ):
-
-            return await interaction.response.send_message(
-
-                "❌ Both proof files must be images.",
-
-                ephemeral=True
-            )
+        return
 
     await interaction.response.defer(
         ephemeral=True
@@ -2512,75 +2481,47 @@ async def proof(
 
     try:
 
-        files = []
+        image_data = await image.read()
 
-        # =================================================
-        # PROCESS EVERY PROOF IMAGE SEPARATELY
-        # =================================================
+        blur_everything = config.get(
+            "blur_everything",
+            True
+        )
 
-        for index, uploaded_image in enumerate(
-            images,
-            1
-        ):
+        blurred_data = blur_proof_text(
+            image_data,
+            blur_everything=blur_everything
+        )
 
-            image_data = await uploaded_image.read()
-
-            # Existing username-only blur.
-            blurred_data = blur_proof_text(
-                image_data
-            )
-
-            file = discord.File(
-
-                io.BytesIO(
-                    blurred_data
-                ),
-
-                filename=f"proof_{index}.png"
-            )
-
-            files.append(
-                file
-            )
-
-        # =================================================
-        # SEND ALL BLURRED PROOFS TO PROOF CHANNEL
-        # =================================================
+        file = discord.File(
+            io.BytesIO(blurred_data),
+            filename="proof.png"
+        )
 
         await proof_channel.send(
-
-            content=(
-                "♡ **New Proof!**\n"
-                "Thank you so much! ♡"
-            ),
-
-            files=files
+            content="""
+            ♡ **New Proof!**
+            Thank you so much! ♡
+            """,
+            file=file
         )
 
         await interaction.followup.send(
-
-            "♡ Your proof has been submitted!\n"
-            f"**{len(files)}** proof image"
-            f"{'s' if len(files) != 1 else ''} "
-            "were processed and blurred successfully! ⭐",
-
+            "Your proof has been submitted! ♡",
             ephemeral=True
         )
 
-    except Exception as error:
+    except Exception as e:
 
         print(
-            f"Proof processing error: {error}"
+            f"Proof command error: {e}"
         )
 
         await interaction.followup.send(
-
-            "❌ There was an error processing "
-            "your proof. Please try again.",
-
+            "Something went wrong while processing the proof.",
             ephemeral=True
         )
-
+        
 # =========================================================
 # VOUCH
 # =========================================================
