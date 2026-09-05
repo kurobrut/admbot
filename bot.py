@@ -1,4 +1,3 @@
-```python
 import os
 import io
 import json
@@ -2264,4 +2263,3 @@ if not TOKEN:
 keep_alive()
 
 bot.run(TOKEN)
-```
