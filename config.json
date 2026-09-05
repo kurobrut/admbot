@@ -1,0 +1,11 @@
+{
+    "panel_channel_id": 1545347212261728377,
+    "proof_channel_id": 1545764967905497098,
+    "status_channel_id": 1545468322404110367,
+    "ticket_category_id": 1545446336197955766,
+    "vouch_channel_id": 1545348018176262165,
+    "welcome_goodbye_channel_id": 1545347465636804747,
+    "customer_role_id": 1545438540362555463,
+    "staff_role_id": null,
+    "blur_everything": true
+}
