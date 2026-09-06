@@ -2606,28 +2606,88 @@ async def giverole(interaction: discord.Interaction, user: discord.Member, role:
 
 
 # =========================================================
-# MUTE
+# MUTE / UNMUTE
 # =========================================================
 
-@bot.tree.command(name="mute", description="Timeout a user for 10 minutes.")
-async def mute(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
+
+def parse_timeout_duration(value: str):
+    """Parse durations such as 10m, 1h, 2d, or 1w."""
+    import re
+
+    value = value.strip().lower()
+    match = re.fullmatch(r"(\d+)\s*(s|m|h|d|w)", value)
+    if not match:
+        return None
+
+    amount = int(match.group(1))
+    unit = match.group(2)
+    multipliers = {
+        "s": 1,
+        "m": 60,
+        "h": 60 * 60,
+        "d": 24 * 60 * 60,
+        "w": 7 * 24 * 60 * 60,
+    }
+    seconds = amount * multipliers[unit]
+
+    # Discord timeouts have a maximum of 28 days.
+    if seconds < 1 or seconds > 28 * 24 * 60 * 60:
+        return None
+
+    return timedelta(seconds=seconds)
+
+
+def format_timeout_duration(value: str) -> str:
+    value = value.strip().lower()
+    return value
+
+
+@bot.tree.command(name="mute", description="Timeout a user for a specified duration.")
+@app_commands.describe(
+    user="The user to mute",
+    duration="How long? Example: 10m, 1h, 1d, 1w (max 28d)",
+    reason="Why are you muting this user?",
+)
+async def mute(
+    interaction: discord.Interaction,
+    user: discord.Member,
+    duration: str = "10m",
+    reason: str = "No reason provided",
+):
     if not is_staff(interaction):
         return await safe_send(interaction, "❌ Only staff can mute users.", ephemeral=True)
+
     guild = interaction.guild
     if guild is None:
         return await safe_send(interaction, "❌ This command can only be used in a server.", ephemeral=True)
+
     hierarchy_error = member_hierarchy_error(interaction, user)
     if hierarchy_error:
         return await safe_send(interaction, hierarchy_error, ephemeral=True)
+
+    timeout_duration = parse_timeout_duration(duration)
+    if timeout_duration is None:
+        return await safe_send(
+            interaction,
+            "❌ Invalid mute duration. Use something like **10m**, **1h**, **1d**, or **1w**. Maximum is **28d**.",
+            ephemeral=True,
+        )
+
     reason = reason.strip() or "No reason provided"
     if len(reason) > 500:
         return await safe_send(interaction, "❌ Keep the reason under **500 characters**.", ephemeral=True)
+
     me = guild.me
     if me is None or not me.guild_permissions.moderate_members:
         return await safe_send(interaction, "❌ I need **Moderate Members** permission to mute/timeout users.", ephemeral=True)
+
     try:
-        await user.timeout(discord.utils.utcnow() + timedelta(minutes=10), reason=reason)
-        await safe_send(interaction, f"🔇 Muted {user.mention} for **10 minutes**.\nReason: **{discord.utils.escape_markdown(reason)}**", ephemeral=True)
+        await user.timeout(discord.utils.utcnow() + timeout_duration, reason=reason)
+        await safe_send(
+            interaction,
+            f"🔇 Muted {user.mention} for **{format_timeout_duration(duration)}**.\nReason: **{discord.utils.escape_markdown(reason)}**",
+            ephemeral=True,
+        )
     except discord.Forbidden:
         await safe_send(interaction, "❌ Discord denied the timeout. Check **Moderate Members** and role hierarchy.", ephemeral=True)
     except discord.HTTPException as error:
@@ -2635,11 +2695,43 @@ async def mute(interaction: discord.Interaction, user: discord.Member, reason: s
         await safe_send(interaction, "❌ Discord rejected the timeout.", ephemeral=True)
 
 
+@bot.tree.command(name="unmute", description="Remove a user's timeout.")
+@app_commands.describe(user="The user to unmute")
+async def unmute(interaction: discord.Interaction, user: discord.Member):
+    if not is_staff(interaction):
+        return await safe_send(interaction, "❌ Only staff can unmute users.", ephemeral=True)
+
+    guild = interaction.guild
+    if guild is None:
+        return await safe_send(interaction, "❌ This command can only be used in a server.", ephemeral=True)
+
+    hierarchy_error = member_hierarchy_error(interaction, user)
+    if hierarchy_error:
+        return await safe_send(interaction, hierarchy_error, ephemeral=True)
+
+    me = guild.me
+    if me is None or not me.guild_permissions.moderate_members:
+        return await safe_send(interaction, "❌ I need **Moderate Members** permission to remove timeouts.", ephemeral=True)
+
+    try:
+        await user.timeout(None, reason=f"Unmuted by {interaction.user}")
+        await safe_send(interaction, f"🔊 Unmuted {user.mention}.", ephemeral=True)
+    except discord.Forbidden:
+        await safe_send(interaction, "❌ Discord denied the unmute. Check **Moderate Members** and role hierarchy.", ephemeral=True)
+    except discord.HTTPException as error:
+        print(f"[UNMUTE] HTTP error: {error}")
+        await safe_send(interaction, "❌ Discord rejected the unmute.", ephemeral=True)
+
+
 # =========================================================
-# BAN
+# BAN / UNBAN
 # =========================================================
 
 @bot.tree.command(name="ban", description="Ban a user.")
+@app_commands.describe(
+    user="The user to ban",
+    reason="Why are you banning this user?",
+)
 async def ban(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
     if not is_staff(interaction):
         return await safe_send(interaction, "❌ Only staff can ban users.", ephemeral=True)
@@ -2665,6 +2757,38 @@ async def ban(interaction: discord.Interaction, user: discord.Member, reason: st
         await safe_send(interaction, "❌ Discord rejected the ban.", ephemeral=True)
 
 
+@bot.tree.command(name="unban", description="Unban a user by their Discord ID.")
+@app_commands.describe(user_id="The user's Discord ID")
+async def unban(interaction: discord.Interaction, user_id: str):
+    if not is_staff(interaction):
+        return await safe_send(interaction, "❌ Only staff can unban users.", ephemeral=True)
+
+    guild = interaction.guild
+    if guild is None:
+        return await safe_send(interaction, "❌ This command can only be used in a server.", ephemeral=True)
+
+    me = guild.me
+    if me is None or not me.guild_permissions.ban_members:
+        return await safe_send(interaction, "❌ I need **Ban Members** permission to unban users.", ephemeral=True)
+
+    user_id = user_id.strip()
+    if not user_id.isdigit():
+        return await safe_send(interaction, "❌ Enter a valid Discord user ID.", ephemeral=True)
+
+    try:
+        target_id = int(user_id)
+        user = await bot.fetch_user(target_id)
+        await guild.unban(user, reason=f"Unbanned by {interaction.user}")
+        await safe_send(interaction, f"✅ Unbanned **{discord.utils.escape_markdown(str(user))}** (`{target_id}`).", ephemeral=True)
+    except discord.NotFound:
+        await safe_send(interaction, "❌ That user is not banned, or the user ID does not exist.", ephemeral=True)
+    except discord.Forbidden:
+        await safe_send(interaction, "❌ Discord denied the unban. Check **Ban Members** permission.", ephemeral=True)
+    except discord.HTTPException as error:
+        print(f"[UNBAN] HTTP error: {error}")
+        await safe_send(interaction, "❌ Discord rejected the unban.", ephemeral=True)
+
+
 # =========================================================
 # KICK
 # =========================================================
@@ -2686,8 +2810,23 @@ async def kick(interaction: discord.Interaction, user: discord.Member, reason: s
     if me is None or not me.guild_permissions.kick_members:
         return await safe_send(interaction, "❌ I need **Kick Members** permission.", ephemeral=True)
     try:
+        # Try to notify the user before removing them from the server.
+        dm_sent = True
+        try:
+            await user.send(
+                f"👢 You have been kicked from **{discord.utils.escape_markdown(guild.name)}**.\n\n"
+                f"Reason: **{discord.utils.escape_markdown(reason)}**"
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            dm_sent = False
+
         await user.kick(reason=reason)
-        await safe_send(interaction, f"👢 Kicked {user.mention}.\nReason: **{discord.utils.escape_markdown(reason)}**", ephemeral=True)
+        dm_status = "📩 DM sent to the user." if dm_sent else "⚠️ I could not DM the user (their DMs may be disabled)."
+        await safe_send(
+            interaction,
+            f"👢 Kicked {user.mention}.\nReason: **{discord.utils.escape_markdown(reason)}**\n{dm_status}",
+            ephemeral=True,
+        )
     except discord.Forbidden:
         await safe_send(interaction, "❌ Discord denied the kick. Check **Kick Members** and role hierarchy.", ephemeral=True)
     except discord.HTTPException as error:
