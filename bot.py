@@ -63,7 +63,22 @@ def keep_alive():
 # CONFIG
 # =========================================================
 
-CONFIG_FILE = "config.json"
+CONFIG_FILE = os.getenv("CONFIG_FILE", "config.json")
+
+# Render and other cloud hosts may use an ephemeral filesystem.  These
+# environment variables are therefore the persistent source of truth for
+# server/channel/role IDs.  Set them once in the hosting dashboard and they
+# survive future code updates/redeploys.
+CONFIG_ENV_KEYS = {
+    "panel_channel_id": "PANEL_CHANNEL_ID",
+    "ticket_category_id": "TICKET_CATEGORY_ID",
+    "vouch_channel_id": "VOUCH_CHANNEL_ID",
+    "status_channel_id": "STATUS_CHANNEL_ID",
+    "welcome_goodbye_channel_id": "WELCOME_GOODBYE_CHANNEL_ID",
+    "proof_channel_id": "PROOF_CHANNEL_ID",
+    "staff_role_id": "STAFF_ROLE_ID",
+    "customer_role_id": "CUSTOMER_ROLE_ID",
+}
 
 DEFAULT_CONFIG = {
     "panel_channel_id": int(
@@ -171,6 +186,29 @@ def load_config():
 
 
 config = load_config()
+
+
+def apply_environment_config(data):
+    """Apply persistent hosting environment variables over local config."""
+    changed = False
+    for config_key, env_key in CONFIG_ENV_KEYS.items():
+        raw = os.getenv(env_key)
+        if raw is None or not raw.strip():
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            print(f"[CONFIG] Ignoring invalid {env_key}: {raw!r}")
+            continue
+        if data.get(config_key) != value:
+            data[config_key] = value
+            changed = True
+    return changed
+
+
+# Environment variables win over config.json so settings survive cloud redeploys.
+if apply_environment_config(config):
+    save_config(config)
 
 
 # =========================================================
@@ -1551,22 +1589,23 @@ async def on_member_join(member: discord.Member):
         print(f"[WELCOME] Configured welcome channel {channel_id} was not found.")
         return
 
+    # Keep the embed narrow and stacked so it reads cleanly on both
+    # Discord mobile and desktop/Windows without awkward line wrapping.
     embed = discord.Embed(
-        title=("╭───────────── ୨୧ ─────────────╮\n"
-               "       🌸˚₊ 𝘸𝘦𝘭𝘤𝘰𝘮𝘦 𝘵𝘰 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦! ♡\n"
-               "╰───────────── ୨୧ ─────────────╯"),
-        description=(f"Welcome {member.mention}! We are so thrilled to have you join our community! ♡\n\n"
-                     "✦ **Getting Started:**\n"
-                     "Check out our products and shop listings!\n"
-                     "Open a support ticket to place custom orders or ask questions!\n"
-                     "Feel free to hang out and chat with our lovely members! ♡\n\n"
-                     "─────────────── ୨୧ ───────────────"),
+        title="🌸 ୨୧ welcome to ali's adm house! ♡",
+        description=(
+            f"Welcome {member.mention}! We're so happy to have you here! ♡\n\n"
+            "✦ **Getting Started**\n"
+            "• Check out our products and shop listings.\n"
+            "• Open a support ticket for custom orders or questions.\n"
+            "• Feel free to chat and enjoy the community! ♡"
+        ),
         color=PINK
     )
     embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="🌸˚₊ Customer", value=f"• {member.mention}", inline=True)
-    embed.add_field(name="⭐˚₊ Member Count", value=f"• `#{member.guild.member_count}`", inline=True)
-
+    embed.add_field(name="🌸 Customer", value=member.mention, inline=False)
+    embed.add_field(name="⭐ Members", value=f"`{member.guild.member_count}`", inline=False)
+    embed.set_footer(text="୨୧ ali's adm house • Welcome ♡")
     try:
         await channel.send(
             content=f"👋 Welcome to the server {member.mention}! ♡",
@@ -1592,16 +1631,18 @@ async def on_member_remove(member: discord.Member):
     if not isinstance(channel, discord.TextChannel):
         return
 
+    # Compact, stacked layout for consistent rendering on mobile and desktop.
     embed = discord.Embed(
-        title=("╭───────────── ୨୧ ─────────────╮\n"
-               "            💔˚₊ 𝘨𝘰𝘰𝘥𝘣𝘺𝘦, 𝘴𝘦𝘦 𝘺𝘰𝘶 𝘴𝘰𝘰𝘯! ♡\n"
-               "╰───────────── ୨୧ ─────────────╯"),
-        description=(f"**{member.name}** has left **ali's adm house**... 💔\n\n"
-                     "We're sad to see you leave, but we hope to see you back again soon! ♡\n\n"
-                     "─────────────── ୨୧ ───────────────"),
+        title="💔 ୨୧ goodbye, see you soon! ♡",
+        description=(
+            f"**{member.name}** has left **ali's adm house**... 💔\n\n"
+            "We're sad to see you leave, but we hope to see you back again soon! ♡"
+        ),
         color=GRAY
     )
     embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="👋 Member", value=f"`{member.name}`", inline=False)
+    embed.set_footer(text="୨୧ ali's adm house • Goodbye ♡")
     try:
         await channel.send(embed=embed)
     except discord.Forbidden:
