@@ -1505,11 +1505,21 @@ def member_hierarchy_error(interaction: discord.Interaction, target: discord.Mem
 
 
 async def safe_send(interaction: discord.Interaction, content=None, *, embed=None, ephemeral=False, view=None):
-    """Send a response whether or not the interaction has already been acknowledged."""
+    """Safely send an interaction response without passing ``view=None`` to discord.py."""
     try:
+        kwargs = {
+            "content": content,
+            "embed": embed,
+            "ephemeral": ephemeral,
+        }
+        # discord.py expects the view argument to be omitted when there is no view.
+        # Passing view=None can cause ``None.is_finished()`` errors in some versions.
+        if view is not None:
+            kwargs["view"] = view
+
         if interaction.response.is_done():
-            return await interaction.followup.send(content=content, embed=embed, ephemeral=ephemeral, view=view)
-        return await interaction.response.send_message(content=content, embed=embed, ephemeral=ephemeral, view=view)
+            return await interaction.followup.send(**kwargs)
+        return await interaction.response.send_message(**kwargs)
     except (discord.NotFound, discord.HTTPException) as error:
         print(f"[RESPONSE] Could not respond: {type(error).__name__}: {error}")
         return None
@@ -2522,8 +2532,8 @@ async def clear(interaction: discord.Interaction, amount: app_commands.Range[int
 
         if recent:
             try:
-                deleted = await channel.delete_messages(recent)
-                deleted_count += len(deleted)
+                await channel.delete_messages(recent)
+                deleted_count += len(recent)
             except discord.HTTPException as error:
                 print(f"[CLEAR] Bulk delete failed ({error}); falling back to individual deletes.")
                 for message in recent:
