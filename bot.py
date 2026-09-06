@@ -2,6 +2,7 @@ import os
 import json
 import io
 import asyncio
+import traceback
 from datetime import timedelta
 from threading import Thread
 
@@ -1413,35 +1414,67 @@ def blur_proof_text(
 
 
 # =========================================================
-# STAFF CHECK
+# PERMISSION / ERROR HELPERS
 # =========================================================
 
-def is_staff(
-    interaction: discord.Interaction
-):
-
-    if interaction.guild is None:
+def is_staff(interaction: discord.Interaction):
+    """Return True for administrators or the configured staff role."""
+    guild = interaction.guild
+    if guild is None or not isinstance(interaction.user, discord.Member):
         return False
 
     if interaction.user.guild_permissions.administrator:
         return True
 
-    staff_role_id = config.get(
-        "staff_role_id"
-    )
-
+    staff_role_id = config.get("staff_role_id")
     if staff_role_id:
+        return any(role.id == staff_role_id for role in interaction.user.roles)
 
-        return any(
-            role.id == staff_role_id
-            for role in getattr(
-                interaction.user,
-                "roles",
-                []
-            )
-        )
-
+    # If no staff role is configured, fall back to Manage Channels.
     return interaction.user.guild_permissions.manage_channels
+
+
+def missing_bot_permissions(channel, *permissions):
+    """Return human-readable bot permissions missing in a channel."""
+    guild = getattr(channel, "guild", None)
+    if not guild:
+        return list(permissions)
+    me = guild.me
+    if me is None:
+        return list(permissions)
+    perms = channel.permissions_for(me)
+    return [name for name, attr in permissions if not getattr(perms, attr, False)]
+
+
+def member_hierarchy_error(interaction: discord.Interaction, target: discord.Member):
+    """Check whether the invoking staff member may moderate target."""
+    guild = interaction.guild
+    actor = interaction.user
+    if guild is None or not isinstance(actor, discord.Member):
+        return "❌ This command can only be used in a server."
+    if target.id == actor.id:
+        return "❌ You cannot target yourself."
+    if target.id == guild.owner_id:
+        return "❌ You cannot moderate the server owner."
+    if actor.id != guild.owner_id and target.top_role >= actor.top_role:
+        return "❌ You cannot target someone with an equal or higher role."
+    me = guild.me
+    if me is None:
+        return "❌ I couldn't find my member role information."
+    if target.top_role >= me.top_role:
+        return "❌ I cannot target that user because their highest role is equal to or higher than mine."
+    return None
+
+
+async def safe_send(interaction: discord.Interaction, content=None, *, embed=None, ephemeral=False, view=None):
+    """Send a response whether or not the interaction has already been acknowledged."""
+    try:
+        if interaction.response.is_done():
+            return await interaction.followup.send(content=content, embed=embed, ephemeral=ephemeral, view=view)
+        return await interaction.response.send_message(content=content, embed=embed, ephemeral=ephemeral, view=view)
+    except (discord.NotFound, discord.HTTPException) as error:
+        print(f"[RESPONSE] Could not respond: {type(error).__name__}: {error}")
+        return None
 
 
 # =========================================================
@@ -1452,69 +1485,35 @@ pending_renames = {}
 
 
 async def process_channel_renames():
-
+    """Process queued channel renames while respecting Discord rate limits."""
     while True:
+        try:
+            if pending_renames:
+                channel_id, new_name = next(iter(pending_renames.items()))
+                del pending_renames[channel_id]
 
-        if pending_renames:
-
-            channel_id, new_name = next(
-                iter(
-                    pending_renames.items()
-                )
-            )
-
-            del pending_renames[
-                channel_id
-            ]
-
-            channel = bot.get_channel(
-                channel_id
-            )
-
-            if (
-                channel
-                and channel.name != new_name
-            ):
-
-                try:
-
-                    await channel.edit(
-                        name=new_name
-                    )
-
-                except discord.HTTPException as error:
-
-                    if error.status == 429:
-
-                        retry_after = getattr(
-                            error,
-                            "retry_after",
-                            60
-                        )
-
-                        pending_renames[
-                            channel_id
-                        ] = new_name
-
-                        await asyncio.sleep(
-                            retry_after
-                        )
-
-                    else:
-
-                        print(
-                            f"Channel rename error: "
-                            f"{error}"
-                        )
-
-                except Exception as error:
-
-                    print(
-                        f"Channel rename error: "
-                        f"{error}"
-                    )
-
-        await asyncio.sleep(5)
+                channel = bot.get_channel(channel_id)
+                if channel and channel.name != new_name:
+                    try:
+                        await channel.edit(name=new_name, reason="Shop status update")
+                    except discord.HTTPException as error:
+                        if error.status == 429:
+                            pending_renames[channel_id] = new_name
+                            await asyncio.sleep(max(1, getattr(error, "retry_after", 5)))
+                        else:
+                            print(f"[RENAME] HTTP error for {channel_id}: {error}")
+                    except discord.Forbidden:
+                        print(f"[RENAME] Missing Manage Channels for {channel_id}")
+                    except Exception:
+                        print(f"[RENAME] Unexpected error for {channel_id}")
+                        traceback.print_exc()
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            print("[RENAME] Queue worker crashed; restarting loop.")
+            traceback.print_exc()
+            await asyncio.sleep(5)
 
 
 # =========================================================
@@ -1522,120 +1521,62 @@ async def process_channel_renames():
 # =========================================================
 
 @bot.event
-async def on_member_join(
-    member: discord.Member
-):
+async def on_member_join(member: discord.Member):
+    try:
+        customer_role_id = config.get("customer_role_id")
+        if customer_role_id:
+            role = member.guild.get_role(int(customer_role_id))
+            if role:
+                me = member.guild.me
+                if me and role >= me.top_role:
+                    print(f"[WELCOME] Cannot give {role.name}: role is above the bot.")
+                elif not me or not me.guild_permissions.manage_roles:
+                    print(f"[WELCOME] I need Manage Roles to give {role.name}.")
+                else:
+                    try:
+                        await member.add_roles(role, reason="Automatic customer role on join")
+                    except discord.Forbidden:
+                        print(f"[WELCOME] Cannot give {role.name} to {member}: check Manage Roles and hierarchy.")
+                    except discord.HTTPException as error:
+                        print(f"[WELCOME] Role assignment HTTP error: {error}")
+    except Exception:
+        print("[WELCOME] Unexpected role-assignment error")
+        traceback.print_exc()
 
-    customer_role_id = config.get(
-        "customer_role_id"
-    )
-
-    if customer_role_id:
-
-        role = member.guild.get_role(
-            customer_role_id
-        )
-
-        if role:
-
-            try:
-
-                await member.add_roles(
-                    role,
-                    reason=(
-                        "Automatic customer "
-                        "role on join"
-                    )
-                )
-
-            except discord.Forbidden:
-
-                print(
-                    f"Cannot give {role.name} "
-                    f"to {member}"
-                )
-
-            except Exception as error:
-
-                print(
-                    f"Role assignment error: "
-                    f"{error}"
-                )
-
-    channel_id = config.get(
-        "welcome_goodbye_channel_id"
-    )
-
+    channel_id = config.get("welcome_goodbye_channel_id")
     if not channel_id:
         return
-
-    channel = member.guild.get_channel(
-        channel_id
-    )
-
-    if not isinstance(
-        channel,
-        discord.TextChannel
-    ):
+    channel = member.guild.get_channel(int(channel_id))
+    if not isinstance(channel, discord.TextChannel):
+        print(f"[WELCOME] Configured welcome channel {channel_id} was not found.")
         return
 
     embed = discord.Embed(
-
-        title=(
-            "╭───────────── ୨୧ ─────────────╮\n"
-            "       🌸˚₊ 𝘸𝘦𝘭𝘤𝘰𝘮𝘦 𝘵𝘰 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦! ♡\n"
-            "╰───────────── ୨୧ ─────────────╯"
-        ),
-
-        description=(
-            f"Welcome {member.mention}! "
-            "We are so thrilled to have you "
-            "join our community! ♡\n\n"
-
-            "✦ **Getting Started:**\n"
-            "Check out our products and shop listings!\n"
-            "Open a support ticket to place custom "
-            "orders or ask questions!\n"
-            "Feel free to hang out and chat with "
-            "our lovely members!\n\n"
-
-            "─────────────── ୨୧ ───────────────"
-        ),
-
+        title=("╭───────────── ୨୧ ─────────────╮\n"
+               "       🌸˚₊ 𝘸𝘦𝘭𝘤𝘰𝘮𝘦 𝘵𝘰 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦! ♡\n"
+               "╰───────────── ୨୧ ─────────────╯"),
+        description=(f"Welcome {member.mention}! We are so thrilled to have you join our community! ♡\n\n"
+                     "✦ **Getting Started:**\n"
+                     "Check out our products and shop listings!\n"
+                     "Open a support ticket to place custom orders or ask questions!\n"
+                     "Feel free to hang out and chat with our lovely members! ♡\n\n"
+                     "─────────────── ୨୧ ───────────────"),
         color=PINK
     )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="🌸˚₊ Customer", value=f"• {member.mention}", inline=True)
+    embed.add_field(name="⭐˚₊ Member Count", value=f"• `#{member.guild.member_count}`", inline=True)
 
-    embed.set_thumbnail(
-        url=member.display_avatar.url
-    )
-
-    embed.add_field(
-        name="🌸˚₊ Customer",
-        value=f"• {member.mention}",
-        inline=True
-    )
-
-    embed.add_field(
-        name="⭐˚₊ Member Count",
-        value=(
-            f"• `#{member.guild.member_count}`"
-        ),
-        inline=True
-    )
-
-    await channel.send(
-
-        content=(
-            f"👋 Welcome to the server "
-            f"{member.mention}! ♡"
-        ),
-
-        embed=embed,
-
-        allowed_mentions=discord.AllowedMentions(
-            users=[member]
+    try:
+        await channel.send(
+            content=f"👋 Welcome to the server {member.mention}! ♡",
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(users=[member])
         )
-    )
+    except discord.Forbidden:
+        print(f"[WELCOME] Cannot send in #{channel.name}: check View Channel/Send Messages.")
+    except discord.HTTPException as error:
+        print(f"[WELCOME] HTTP error: {error}")
 
 
 # =========================================================
@@ -1643,70 +1584,39 @@ async def on_member_join(
 # =========================================================
 
 @bot.event
-async def on_member_remove(
-    member: discord.Member
-):
-
-    channel_id = config.get(
-        "welcome_goodbye_channel_id"
-    )
-
+async def on_member_remove(member: discord.Member):
+    channel_id = config.get("welcome_goodbye_channel_id")
     if not channel_id:
         return
-
-    channel = member.guild.get_channel(
-        channel_id
-    )
-
-    if not isinstance(
-        channel,
-        discord.TextChannel
-    ):
+    channel = member.guild.get_channel(int(channel_id))
+    if not isinstance(channel, discord.TextChannel):
         return
 
     embed = discord.Embed(
-
-        title=(
-            "╭───────────── ୨୧ ─────────────╮\n"
-            "            💔˚₊ 𝘨𝘰𝘰𝘥𝘣𝘺𝘦, 𝘴𝘦𝘦 𝘺𝘰𝘶 𝘴𝘰𝘰𝘯! ♡\n"
-            "╰───────────── ୨୧ ─────────────╯"
-        ),
-
-        description=(
-            f"**{member.name}** has left "
-            "**ali's adm house**... 💔\n\n"
-
-            "We're sad to see you leave, "
-            "but we hope to see you back again soon! ♡\n\n"
-
-            "─────────────── ୨୧ ───────────────"
-        ),
-
+        title=("╭───────────── ୨୧ ─────────────╮\n"
+               "            💔˚₊ 𝘨𝘰𝘰𝘥𝘣𝘺𝘦, 𝘴𝘦𝘦 𝘺𝘰𝘶 𝘴𝘰𝘰𝘯! ♡\n"
+               "╰───────────── ୨୧ ─────────────╯"),
+        description=(f"**{member.name}** has left **ali's adm house**... 💔\n\n"
+                     "We're sad to see you leave, but we hope to see you back again soon! ♡\n\n"
+                     "─────────────── ୨୧ ───────────────"),
         color=GRAY
     )
-
-    embed.set_thumbnail(
-        url=member.display_avatar.url
-    )
-
-    await channel.send(
-        embed=embed
-    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    try:
+        await channel.send(embed=embed)
+    except discord.Forbidden:
+        print(f"[GOODBYE] Cannot send in #{channel.name}: check Send Messages.")
+    except discord.HTTPException as error:
+        print(f"[GOODBYE] HTTP error: {error}")
 
 
 # =========================================================
 # TICKET VIEW
 # =========================================================
 
-class TicketView(
-    discord.ui.View
-):
-
+class TicketView(discord.ui.View):
     def __init__(self):
-
-        super().__init__(
-            timeout=None
-        )
+        super().__init__(timeout=None)
 
     @discord.ui.button(
         label="Open Ticket",
@@ -1714,199 +1624,97 @@ class TicketView(
         style=discord.ButtonStyle.primary,
         custom_id="ali_adm_open_ticket"
     )
-    async def open_ticket(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
-    ):
-
+    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
-
         if guild is None:
-            return
+            return await safe_send(interaction, "❌ This button can only be used in a server.", ephemeral=True)
 
-        category_id = config.get(
-            "ticket_category_id"
-        )
+        category_id = config.get("ticket_category_id")
+        category = guild.get_channel(int(category_id)) if category_id else None
+        if not isinstance(category, discord.CategoryChannel):
+            return await safe_send(interaction, "❌ The ticket category hasn't been configured yet.", ephemeral=True)
 
-        category = (
-            guild.get_channel(
-                category_id
-            )
-            if category_id
-            else None
-        )
+        # Reuse an existing ticket if one exists.
+        topic = f"ali_adm_ticket:{interaction.user.id}"
+        existing = discord.utils.find(lambda c: isinstance(c, discord.TextChannel) and c.topic == topic, guild.text_channels)
+        if existing:
+            return await safe_send(interaction, f"❌ You already have an open ticket: {existing.mention}", ephemeral=True)
 
-        if not isinstance(
-            category,
-            discord.CategoryChannel
-        ):
-
-            return await interaction.response.send_message(
-
-                "❌ The ticket category "
-                "hasn't been configured yet.",
-
-                ephemeral=True
-            )
-
-        for channel in guild.text_channels:
-
-            if channel.topic == (
-                f"ali_adm_ticket:"
-                f"{interaction.user.id}"
-            ):
-
-                return await interaction.response.send_message(
-
-                    f"❌ You already have an "
-                    f"open ticket: "
-                    f"{channel.mention}",
-
-                    ephemeral=True
-                )
-
-        staff_role = None
-
-        staff_role_id = config.get(
-            "staff_role_id"
-        )
-
-        if staff_role_id:
-
-            staff_role = guild.get_role(
-                staff_role_id
-            )
-
+        staff_role = guild.get_role(int(config["staff_role_id"])) if config.get("staff_role_id") else None
         overwrites = {
-
-            guild.default_role:
-                discord.PermissionOverwrite(
-                    view_channel=False
-                ),
-
-            interaction.user:
-                discord.PermissionOverwrite(
-                    view_channel=True,
-                    send_messages=True,
-                    read_message_history=True,
-                    attach_files=True,
-                    embed_links=True
-                )
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True,
+                attach_files=True, embed_links=True
+            )
         }
-
         if staff_role:
-
-            overwrites[
-                staff_role
-            ] = discord.PermissionOverwrite(
-
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                manage_channels=True,
-                attach_files=True,
-                embed_links=True
+            overwrites[staff_role] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True,
+                manage_channels=True, attach_files=True, embed_links=True
             )
 
-        username = (
-            interaction.user.name
-            .lower()
-            .replace(" ", "-")
-            .replace("_", "-")
-        )
+        me = guild.me
+        if me is None:
+            return await safe_send(interaction, "❌ I couldn't find my server member information.", ephemeral=True)
+        category_perms = category.permissions_for(me)
+        missing = [name for name, attr in (
+            ("View Channel", "view_channel"),
+            ("Manage Channels", "manage_channels")
+        ) if not getattr(category_perms, attr, False)]
+        if missing:
+            return await safe_send(interaction, "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " for ticket creation.", ephemeral=True)
 
-        ticket_name = (
-            f"ticket-{username}"
-        )[:90]
+        username = "".join(c if c.isalnum() or c == "-" else "-" for c in interaction.user.name.lower().replace("_", "-"))
+        ticket_name = f"ticket-{username}"[:90]
 
         try:
-
-            ticket_channel = (
-                await guild.create_text_channel(
-
-                    name=ticket_name,
-
-                    category=category,
-
-                    overwrites=overwrites,
-
-                    topic=(
-                        f"ali_adm_ticket:"
-                        f"{interaction.user.id}"
-                    )
-                )
+            await interaction.response.defer(ephemeral=True)
+            ticket_channel = await guild.create_text_channel(
+                name=ticket_name,
+                category=category,
+                overwrites=overwrites,
+                topic=topic,
+                reason=f"Ticket opened by {interaction.user}"
             )
 
+            embed = discord.Embed(
+                title="୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
+                description=(f"Welcome {interaction.user.mention}! ♡\n\n"
+                             "Thank you for contacting **ali's adm house**!\n\n"
+                             "Please tell us what you need help with.\n\n"
+                             "୨୧ **House:**\n୨୧ **Build type:**\n\n"
+                             "A staff member will be with you shortly. ♡"),
+                color=PINK
+            )
+            await ticket_channel.send(
+                content=interaction.user.mention,
+                embed=embed,
+                view=CloseTicketView(),
+                allowed_mentions=discord.AllowedMentions(users=[interaction.user])
+            )
+            await interaction.followup.send(f"🎫 Your ticket has been created: {ticket_channel.mention}", ephemeral=True)
         except discord.Forbidden:
-
-            return await interaction.response.send_message(
-
-                "❌ I don't have permission "
-                "to create ticket channels.",
-
-                ephemeral=True
-            )
-
-        embed = discord.Embed(
-
-            title=(
-                "୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡"
-            ),
-
-            description=(
-                f"Welcome {interaction.user.mention}! ♡\n\n"
-
-                "Thank you for contacting "
-                "**ali's adm house**!\n\n"
-
-                "Please tell us what you need help with.\n\n"
-
-                "୨୧ **House:**\n"
-                "୨୧ **Build type:**\n\n"
-
-                "A staff member will be with "
-                "you shortly. ♡"
-            ),
-
-            color=PINK
-        )
-
-        await ticket_channel.send(
-
-            content=interaction.user.mention,
-
-            embed=embed,
-
-            view=CloseTicketView(),
-
-            allowed_mentions=discord.AllowedMentions(
-                users=[interaction.user]
-            )
-        )
-
-        await interaction.response.send_message(
-
-            f"🎫 Your ticket has been created: "
-            f"{ticket_channel.mention}",
-
-            ephemeral=True
-        )
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Discord denied ticket creation. Check **Manage Channels**, **View Channel**, and role hierarchy.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Discord denied ticket creation. Check **Manage Channels**, **View Channel**, and role hierarchy.", ephemeral=True)
+        except discord.HTTPException as error:
+            print(f"[TICKET CREATE] HTTP error: {error}")
+            await safe_send(interaction, f"❌ Discord returned an error while creating the ticket: `{error}`", ephemeral=True)
+        except Exception:
+            print("[TICKET CREATE] Unexpected error")
+            traceback.print_exc()
+            await safe_send(interaction, "❌ Something went wrong while creating the ticket. Check the bot console.", ephemeral=True)
 
 
 # =========================================================
 # CLOSE TICKET VIEW
 # =========================================================
 
-class CloseTicketView(
-    discord.ui.View
-):
-
+class CloseTicketView(discord.ui.View):
     def __init__(self):
-
-        super().__init__(
-            timeout=None
-        )
+        super().__init__(timeout=None)
 
     @discord.ui.button(
         label="Close Ticket",
@@ -1914,296 +1722,111 @@ class CloseTicketView(
         style=discord.ButtonStyle.danger,
         custom_id="ali_adm_close_ticket"
     )
-    async def close_ticket(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button
-    ):
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel = interaction.channel
+        guild = interaction.guild
+        if guild is None or channel is None:
+            return await safe_send(interaction, "❌ This ticket is no longer available.", ephemeral=True)
 
         if is_staff(interaction):
-
-            await interaction.response.send_message(
-
-                "🔒 Closing ticket in "
-                "**3 seconds**..."
-            )
-
-            await asyncio.sleep(3)
-
-            if interaction.channel:
-
-                await interaction.channel.delete(
-                    reason=(
-                        f"Ticket closed by staff "
-                        f"{interaction.user}"
-                    )
-                )
-
+            try:
+                await interaction.response.send_message("🔒 Closing ticket in **3 seconds**...")
+                await asyncio.sleep(3)
+                await channel.delete(reason=f"Ticket closed by staff {interaction.user}")
+            except discord.NotFound:
+                pass
+            except discord.Forbidden:
+                await safe_send(interaction, "❌ I cannot delete this ticket channel. Check **Manage Channels**.", ephemeral=True)
+            except discord.HTTPException as error:
+                print(f"[TICKET CLOSE] HTTP error: {error}")
+                await safe_send(interaction, "❌ Discord rejected the ticket deletion.", ephemeral=True)
             return
 
-        guild = interaction.guild
+        vouch_channel_id = config.get("vouch_channel_id")
+        vouch_channel = guild.get_channel(int(vouch_channel_id)) if vouch_channel_id else None
+        if not isinstance(vouch_channel, discord.TextChannel):
+            return await safe_send(interaction, "❌ The vouch channel has not been configured yet.", ephemeral=True)
 
-        if guild is None:
-            return
-
-        vouch_channel_id = config.get(
-            "vouch_channel_id"
-        )
-
-        vouch_channel = (
-            guild.get_channel(
-                vouch_channel_id
-            )
-            if vouch_channel_id
-            else None
-        )
-
-        if not isinstance(
-            vouch_channel,
-            discord.TextChannel
-        ):
-
-            return await interaction.response.send_message(
-
-                "❌ The vouch channel has "
-                "not been configured yet.",
-
-                ephemeral=True
-            )
-
-        ticket_created_at = (
-            interaction.channel.created_at
-            if interaction.channel
-            else discord.utils.utcnow()
-        )
-
+        ticket_created_at = getattr(channel, "created_at", discord.utils.utcnow())
         has_vouched = False
-
-        async for message in vouch_channel.history(
-            limit=100
-        ):
-
-            if message.author != bot.user:
-                continue
-
-            if (
-                interaction.user in message.mentions
-                or str(interaction.user.id)
-                in message.content
-            ):
-
-                if (
-                    message.created_at
-                    >= ticket_created_at
-                ):
-
+        try:
+            async for message in vouch_channel.history(limit=200):
+                if message.author != bot.user:
+                    continue
+                if (interaction.user in message.mentions or str(interaction.user.id) in message.content) and message.created_at >= ticket_created_at:
                     has_vouched = True
                     break
+        except discord.Forbidden:
+            return await safe_send(interaction, "❌ I cannot check the vouch channel. Please contact staff.", ephemeral=True)
+        except discord.HTTPException as error:
+            print(f"[TICKET VOUCH CHECK] HTTP error: {error}")
+            return await safe_send(interaction, "❌ I couldn't verify your vouch right now. Please try again.", ephemeral=True)
 
-        bot_commands_channel = discord.utils.get(
-
-            guild.text_channels,
-
-            name="₊˚⊹♡-𝓫𝓸𝓽-𝓬𝓸𝓶𝓶𝓪𝓷𝓭𝓼"
-        )
-
-        if bot_commands_channel:
-
-            commands_mention = (
-                bot_commands_channel.mention
-            )
-
-        else:
-
-            commands_mention = (
-                "`#₊˚⊹♡-𝓫𝓸𝓽-𝓬𝓸𝓶𝓶𝓪𝓷𝓭𝓼`"
-            )
-
+        bot_commands_channel = discord.utils.get(guild.text_channels, name="₊˚⊹♡-𝓫𝓸𝓽-𝓬𝓸𝓶𝓶𝓪𝓷𝓭𝓼")
+        commands_mention = bot_commands_channel.mention if bot_commands_channel else "`#₊˚⊹♡-𝓫𝓸𝓽-𝓬𝓸𝓶𝓶𝓪𝓷𝓭𝓼`"
         if not has_vouched:
-
-            return await interaction.response.send_message(
-
-                "Did you vouch yet? ♡\n\n"
-
-                f"Please use `/vouch` in "
-                f"{commands_mention} "
-                "before closing your ticket!",
-
-                ephemeral=True
-            )
-
-        await interaction.response.send_message(
-
-            "Thank you so much for your order "
-            "and for leaving a vouch! ♡\n"
-
-            "We hope to see you again at "
-            "**ali's adm house**! 🌸\n\n"
-
-            "🔒 *Closing this ticket "
-            "in 3 seconds...*"
-        )
-
-        await asyncio.sleep(3)
-
-        if interaction.channel:
-
-            await interaction.channel.delete(
-                reason=(
-                    f"Ticket closed by customer "
-                    f"{interaction.user}"
-                )
-            )
-
-
-# =========================================================
-# READY
-# =========================================================
-
-@bot.event
-async def on_ready():
-
-    print(
-        f"Logged in as {bot.user} "
-        f"(ID: {bot.user.id})"
-    )
-
-    if not getattr(
-        bot,
-        "_persistent_views_loaded",
-        False
-    ):
-
-        bot.add_view(
-            TicketView()
-        )
-
-        bot.add_view(
-            CloseTicketView()
-        )
-
-        bot._persistent_views_loaded = True
-
-    if not hasattr(
-        bot,
-        "_rename_task"
-    ):
-
-        bot._rename_task = asyncio.create_task(
-            process_channel_renames()
-        )
-
-    if not getattr(
-        bot,
-        "_commands_synced",
-        False
-    ):
+            return await safe_send(interaction, f"Did you vouch yet? ♡\n\nPlease use `/vouch` in {commands_mention} before closing your ticket!", ephemeral=True)
 
         try:
-
-            synced = await bot.tree.sync()
-
-            bot._commands_synced = True
-
-            print(
-                f"Successfully synced "
-                f"{len(synced)} slash commands."
+            await interaction.response.send_message(
+                "Thank you so much for your order and for leaving a vouch! ♡\n"
+                "We hope to see you again at **ali's adm house**! 🌸\n\n"
+                "🔒 *Closing this ticket in 3 seconds...*"
             )
-
-        except Exception as error:
-
-            print(
-                f"Command sync error: {error}"
-            )
+            await asyncio.sleep(3)
+            await channel.delete(reason=f"Ticket closed by customer {interaction.user}")
+        except discord.NotFound:
+            pass
+        except discord.Forbidden:
+            await safe_send(interaction, "❌ I cannot delete this ticket channel. Please contact staff.", ephemeral=True)
+        except discord.HTTPException as error:
+            print(f"[TICKET CLOSE] Customer close HTTP error: {error}")
+            await safe_send(interaction, "❌ Discord rejected the ticket deletion.", ephemeral=True)
 
 
 # =========================================================
 # SETUP
 # =========================================================
 
-@bot.tree.command(
-    name="setup",
-    description="Configure the ticket system."
-)
-@app_commands.default_permissions(
-    administrator=True
-)
-@app_commands.describe(
-    panel_channel="Channel for the ticket panel",
-    ticket_category="Category where tickets are created",
-    staff_role="Staff role",
-    vouch_channel="Vouch channel"
-)
-async def setup(
-    interaction: discord.Interaction,
-    panel_channel: discord.TextChannel,
-    ticket_category: discord.CategoryChannel,
-    staff_role: discord.Role | None = None,
-    vouch_channel: discord.TextChannel | None = None
-):
+@bot.tree.command(name="setup", description="Configure the ticket system.")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(panel_channel="Channel for the ticket panel", ticket_category="Category where tickets are created", staff_role="Staff role", vouch_channel="Vouch channel")
+async def setup(interaction: discord.Interaction, panel_channel: discord.TextChannel, ticket_category: discord.CategoryChannel, staff_role: discord.Role | None = None, vouch_channel: discord.TextChannel | None = None):
+    guild = interaction.guild
+    if guild is None or not interaction.user.guild_permissions.administrator:
+        return await safe_send(interaction, "❌ You need **Administrator** permission.", ephemeral=True)
+    me = guild.me
+    if me is None:
+        return await safe_send(interaction, "❌ I couldn't find my server member information.", ephemeral=True)
+    missing = missing_bot_permissions(panel_channel, ("View Channel", "view_channel"), ("Send Messages", "send_messages"), ("Embed Links", "embed_links"))
+    if missing:
+        return await safe_send(interaction, "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in the panel channel.", ephemeral=True)
+    cat_perms = ticket_category.permissions_for(me)
+    if not cat_perms.view_channel or not cat_perms.manage_channels:
+        return await safe_send(interaction, "❌ I need **View Channel** and **Manage Channels** for the ticket category.", ephemeral=True)
+    if staff_role and (staff_role.is_default() or staff_role.managed or staff_role >= me.top_role):
+        return await safe_send(interaction, "❌ I cannot use that staff role because it is managed or too high for my role.", ephemeral=True)
 
-    if not interaction.user.guild_permissions.administrator:
-
-        return await interaction.response.send_message(
-
-            "❌ You need **Administrator** permission.",
-
-            ephemeral=True
-        )
-
-    config[
-        "panel_channel_id"
-    ] = panel_channel.id
-
-    config[
-        "ticket_category_id"
-    ] = ticket_category.id
-
-    config[
-        "staff_role_id"
-    ] = (
-        staff_role.id
-        if staff_role
-        else None
-    )
-
-    if vouch_channel:
-
-        config[
-            "vouch_channel_id"
-        ] = vouch_channel.id
-
+    config["panel_channel_id"] = panel_channel.id
+    config["ticket_category_id"] = ticket_category.id
+    config["staff_role_id"] = staff_role.id if staff_role else None
+    if vouch_channel is not None:
+        config["vouch_channel_id"] = vouch_channel.id
     save_config(config)
 
     embed = discord.Embed(
-
-        title=(
-            "୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡"
-        ),
-
-        description=(
-            "Need help with an order?\n"
-            "Want to ask about one of our houses?\n\n"
-
-            "Click **🎫 Open Ticket** below "
-            "to create a private ticket with "
-            "our staff! ♡"
-        ),
-
+        title="୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
+        description="Need help with an order?\nWant to ask about one of our houses?\n\nClick **🎫 Open Ticket** below to create a private ticket with our staff! ♡",
         color=PINK
     )
-
-    await panel_channel.send(
-        embed=embed,
-        view=TicketView()
-    )
-
-    await interaction.response.send_message(
-
-        "♡ Ticket system configured successfully!",
-
-        ephemeral=True
-    )
+    try:
+        await panel_channel.send(embed=embed, view=TicketView())
+        await interaction.response.send_message("♡ Ticket system configured successfully!", ephemeral=True)
+    except discord.Forbidden:
+        await safe_send(interaction, "❌ Configuration was saved, but I cannot send the ticket panel there. Check my permissions.", ephemeral=True)
+    except discord.HTTPException as error:
+        print(f"[SETUP] HTTP error: {error}")
+        await safe_send(interaction, "❌ Configuration was saved, but Discord rejected the panel message.", ephemeral=True)
 
 
 # =========================================================
@@ -2228,6 +1851,18 @@ async def setupstatus(
 
             "❌ You need **Administrator** permission.",
 
+            ephemeral=True
+        )
+
+    missing = missing_bot_permissions(
+        status_channel,
+        ("View Channel", "view_channel"),
+        ("Send Messages", "send_messages"),
+        ("Manage Channels", "manage_channels")
+    )
+    if missing:
+        return await interaction.response.send_message(
+            "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in that channel.",
             ephemeral=True
         )
 
@@ -2277,7 +1912,12 @@ async def setupjoins(
     ] = welcome_goodbye_channel.id
 
     if customer_role:
-
+        me = interaction.guild.me
+        if me and (customer_role.is_default() or customer_role.managed or customer_role >= me.top_role):
+            return await interaction.response.send_message(
+                "❌ I cannot automatically give that customer role because it is managed or too high for my role.",
+                ephemeral=True
+            )
         config[
             "customer_role_id"
         ] = customer_role.id
@@ -2317,6 +1957,18 @@ async def setupproof(
             ephemeral=True
         )
 
+    missing = missing_bot_permissions(
+        proof_channel,
+        ("View Channel", "view_channel"),
+        ("Send Messages", "send_messages"),
+        ("Attach Files", "attach_files")
+    )
+    if missing:
+        return await interaction.response.send_message(
+            "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in the proof channel.",
+            ephemeral=True
+        )
+
     config[
         "proof_channel_id"
     ] = proof_channel.id
@@ -2336,51 +1988,27 @@ async def setupproof(
 # TICKET PANEL
 # =========================================================
 
-@bot.tree.command(
-    name="ticketpanel",
-    description="Send a ticket panel."
-)
-async def ticketpanel(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel
-):
-
+@bot.tree.command(name="ticketpanel", description="Send a ticket panel.")
+async def ticketpanel(interaction: discord.Interaction, channel: discord.TextChannel):
     if not is_staff(interaction):
-
-        return await interaction.response.send_message(
-
-            "❌ You need staff permissions.",
-
-            ephemeral=True
-        )
+        return await safe_send(interaction, "❌ You need staff permissions.", ephemeral=True)
+    missing = missing_bot_permissions(channel, ("View Channel", "view_channel"), ("Send Messages", "send_messages"), ("Embed Links", "embed_links"))
+    if missing:
+        return await safe_send(interaction, "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in that channel.", ephemeral=True)
 
     embed = discord.Embed(
-
-        title=(
-            "୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡"
-        ),
-
-        description=(
-            "Need help? ♡\n\n"
-            "Click **🎫 Open Ticket** below "
-            "to create a private ticket."
-        ),
-
+        title="୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
+        description="Need help? ♡\n\nClick **🎫 Open Ticket** below to create a private ticket.",
         color=PINK
     )
-
-    await channel.send(
-        embed=embed,
-        view=TicketView()
-    )
-
-    await interaction.response.send_message(
-
-        f"♡ Ticket panel sent to "
-        f"{channel.mention}.",
-
-        ephemeral=True
-    )
+    try:
+        await channel.send(embed=embed, view=TicketView())
+        await safe_send(interaction, f"♡ Ticket panel sent to {channel.mention}.", ephemeral=True)
+    except discord.Forbidden:
+        await safe_send(interaction, "❌ Discord denied sending the ticket panel.", ephemeral=True)
+    except discord.HTTPException as error:
+        print(f"[TICKET PANEL] HTTP error: {error}")
+        await safe_send(interaction, "❌ Discord rejected the ticket panel.", ephemeral=True)
 
 
 # =========================================================
@@ -2412,394 +2040,192 @@ async def ping(
 # PROOF
 # =========================================================
 
-@bot.tree.command(
-    name="proof",
-    description="Upload a proof image."
-)
-@app_commands.describe(
-    image="Proof image"
-)
-async def proof(
-    interaction: discord.Interaction,
-    image: discord.Attachment
-):
+@bot.tree.command(name="proof", description="Upload a proof image.")
+@app_commands.describe(image="Proof image")
+async def proof(interaction: discord.Interaction, image: discord.Attachment):
+    guild = interaction.guild
+    if guild is None:
+        return await safe_send(interaction, "❌ This command can only be used in a server.", ephemeral=True)
 
-    proof_channel_id = config.get(
-        "proof_channel_id"
-    )
-
+    proof_channel_id = config.get("proof_channel_id")
     if not proof_channel_id:
+        return await safe_send(interaction, "❌ Proof channel is not configured.", ephemeral=True)
 
-        await interaction.response.send_message(
-            "Proof channel is not configured.",
-            ephemeral=True
-        )
+    proof_channel = guild.get_channel(int(proof_channel_id))
+    if not isinstance(proof_channel, discord.TextChannel):
+        return await safe_send(interaction, "❌ Proof channel could not be found.", ephemeral=True)
 
-        return
-
-    proof_channel = interaction.guild.get_channel(
-        int(proof_channel_id)
-    )
-
-    if not proof_channel:
-
-        await interaction.response.send_message(
-            "Proof channel could not be found.",
-            ephemeral=True
-        )
-
-        return
-
-    valid_extensions = (
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".webp"
-    )
-
-    content_type = (
-        image.content_type or ""
-    ).lower()
-
+    valid_extensions = (".png", ".jpg", ".jpeg", ".webp")
+    content_type = (image.content_type or "").lower()
     filename = image.filename.lower()
+    if not (content_type.startswith("image/") or filename.endswith(valid_extensions)):
+        return await safe_send(interaction, "❌ Please upload a PNG, JPG, JPEG, or WEBP image.", ephemeral=True)
 
-    if not (
-        content_type.startswith("image/")
-        or filename.endswith(valid_extensions)
-    ):
+    if image.size > 10 * 1024 * 1024:
+        return await safe_send(interaction, "❌ Please keep proof images under **10 MB**.", ephemeral=True)
 
-        await interaction.response.send_message(
-            "Please upload a PNG, JPG, JPEG, or WEBP image.",
-            ephemeral=True
-        )
+    missing = missing_bot_permissions(proof_channel, ("View Channel", "view_channel"), ("Send Messages", "send_messages"), ("Attach Files", "attach_files"))
+    if missing:
+        return await safe_send(interaction, "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in the proof channel.", ephemeral=True)
 
-        return
-
-    await interaction.response.defer(
-        ephemeral=True
-    )
-
+    await interaction.response.defer(ephemeral=True)
     try:
-
         image_data = await image.read()
-
-        blur_everything = config.get(
-            "blur_everything",
-            True
-        )
+        # Validate that Discord actually delivered a readable image before OCR/PIL work.
+        with Image.open(io.BytesIO(image_data)) as check:
+            check.verify()
 
         blurred_data = blur_proof_text(
             image_data,
-            blur_everything=blur_everything
+            blur_everything=bool(config.get("blur_everything", True))
         )
-
-        file = discord.File(
-            io.BytesIO(blurred_data),
-            filename="proof.png"
-        )
-
+        file = discord.File(io.BytesIO(blurred_data), filename="proof.png")
         await proof_channel.send(
-            content="""
-            ♡ **New Proof!**
-            Thank you so much! ♡
-            """,
-            file=file
+            content=f"♡ **New Proof!**\nThank you so much! ♡\nSubmitted by {interaction.user.mention}",
+            file=file,
+            allowed_mentions=discord.AllowedMentions(users=[interaction.user])
         )
+        await interaction.followup.send("♡ Your proof has been submitted!", ephemeral=True)
+    except (OSError, ValueError):
+        await interaction.followup.send("❌ That image could not be read. Please upload a valid PNG/JPG/WEBP image.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.followup.send("❌ I cannot post the processed proof. Check **Send Messages** and **Attach Files**.", ephemeral=True)
+    except discord.HTTPException as error:
+        print(f"[PROOF] Discord HTTP error: {error}")
+        await interaction.followup.send("❌ Discord rejected the proof upload. Please try again.", ephemeral=True)
+    except Exception:
+        print("[PROOF] Unexpected error")
+        traceback.print_exc()
+        await interaction.followup.send("❌ Something went wrong while processing the proof. Check the bot console.", ephemeral=True)
 
-        await interaction.followup.send(
-            "Your proof has been submitted! ♡",
-            ephemeral=True
-        )
 
-    except Exception as e:
-
-        print(
-            f"Proof command error: {e}"
-        )
-
-        await interaction.followup.send(
-            "Something went wrong while processing the proof.",
-            ephemeral=True
-        )
-        
 # =========================================================
 # VOUCH
 # =========================================================
 
-@bot.tree.command(
-    name="vouch",
-    description="Leave a vouch."
-)
-@app_commands.describe(
-    message="Your vouch message"
-)
-async def vouch(
-    interaction: discord.Interaction,
-    message: str
-):
+@bot.tree.command(name="vouch", description="Leave a vouch.")
+@app_commands.describe(message="Your vouch message")
+async def vouch(interaction: discord.Interaction, message: str):
+    guild = interaction.guild
+    if guild is None:
+        return await safe_send(interaction, "❌ This command can only be used in a server.", ephemeral=True)
 
-    channel_id = config.get(
-        "vouch_channel_id"
-    )
+    message = message.strip()
+    if not message:
+        return await safe_send(interaction, "❌ Please enter a vouch message.", ephemeral=True)
+    if len(message) > 1000:
+        return await safe_send(interaction, "❌ Your vouch is too long. Please keep it under **1000 characters**.", ephemeral=True)
 
-    channel = (
-        interaction.guild.get_channel(
-            channel_id
-        )
-        if channel_id
-        and interaction.guild
-        else None
-    )
+    channel_id = config.get("vouch_channel_id")
+    channel = guild.get_channel(int(channel_id)) if channel_id else None
+    if not isinstance(channel, discord.TextChannel):
+        return await safe_send(interaction, "❌ The vouch channel hasn't been configured yet.", ephemeral=True)
 
-    if not isinstance(
-        channel,
-        discord.TextChannel
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ The vouch channel hasn't "
-            "been configured yet.",
-
-            ephemeral=True
-        )
+    missing = missing_bot_permissions(channel, ("View Channel", "view_channel"), ("Send Messages", "send_messages"), ("Embed Links", "embed_links"))
+    if missing:
+        return await safe_send(interaction, "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in the vouch channel.", ephemeral=True)
 
     embed = discord.Embed(
-
-        title=(
-            "୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡"
-        ),
-
-        description=(
-            f"**{message}**\n\n"
-
-            "୨୧ **𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳**\n"
-            f"{interaction.user.mention}\n\n"
-
-            "Thank you so much! ♡"
-        ),
-
+        title="୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡",
+        description=f"**{discord.utils.escape_markdown(message)}**\n\n୨୧ **𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳**\n{interaction.user.mention}\n\nThank you so much! ♡",
         color=PINK
     )
+    embed.set_author(name="୨୧ 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦 ♡")
 
-    embed.set_author(
-        name=(
-            "୨୧ 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦 ♡"
+    try:
+        await channel.send(
+            content=interaction.user.mention,
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(users=[interaction.user])
         )
-    )
-
-    await channel.send(
-
-        content=interaction.user.mention,
-
-        embed=embed,
-
-        allowed_mentions=discord.AllowedMentions(
-            users=[interaction.user]
-        )
-    )
-
-    await interaction.response.send_message(
-
-        "♡ Your vouch has been posted! "
-        "Thank you! ⭐",
-
-        ephemeral=True
-    )
+        await interaction.response.send_message("♡ Your vouch has been posted! Thank you! ⭐", ephemeral=True)
+    except discord.Forbidden:
+        await safe_send(interaction, "❌ I cannot post in the vouch channel. Check my channel permissions.", ephemeral=True)
+    except discord.HTTPException as error:
+        print(f"[VOUCH] HTTP error: {error}")
+        await safe_send(interaction, "❌ Discord rejected the vouch. Please try again.", ephemeral=True)
 
 
 # =========================================================
 # VOUCH COUNT
 # =========================================================
 
-@bot.tree.command(
-    name="vouchcount",
-    description="Check the total number of vouches."
-)
-async def vouchcount(
-    interaction: discord.Interaction
-):
+@bot.tree.command(name="vouchcount", description="Check the total number of vouches.")
+async def vouchcount(interaction: discord.Interaction):
+    guild = interaction.guild
+    if guild is None:
+        return await safe_send(interaction, "❌ This command can only be used in a server.", ephemeral=True)
+    channel_id = config.get("vouch_channel_id")
+    channel = guild.get_channel(int(channel_id)) if channel_id else None
+    if not isinstance(channel, discord.TextChannel):
+        return await safe_send(interaction, "❌ Vouch channel isn't configured.", ephemeral=True)
 
-    channel_id = config.get(
-        "vouch_channel_id"
-    )
+    missing = missing_bot_permissions(channel, ("View Channel", "view_channel"), ("Read Message History", "read_message_history"))
+    if missing:
+        return await safe_send(interaction, "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in the vouch channel.", ephemeral=True)
 
-    channel = (
-        interaction.guild.get_channel(
-            channel_id
-        )
-        if channel_id
-        and interaction.guild
-        else None
-    )
-
-    if not isinstance(
-        channel,
-        discord.TextChannel
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ Vouch channel isn't configured.",
-
-            ephemeral=True
-        )
-
-    await interaction.response.defer(
-        ephemeral=True
-    )
-
+    await interaction.response.defer(ephemeral=True)
     count = 0
-
-    async for message in channel.history(
-        limit=None
-    ):
-
-        if message.author == bot.user:
-
-            count += 1
-
-    await interaction.followup.send(
-
-        f"♡ **ali's adm house** has "
-        f"**{count}** vouch(es)! ⭐",
-
-        ephemeral=True
-    )
+    try:
+        async for msg in channel.history(limit=None):
+            if msg.author == bot.user and any(
+                embed.title == "୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡" for embed in msg.embeds
+            ):
+                count += 1
+        await interaction.followup.send(f"♡ **ali's adm house** has **{count}** vouch(es)! ⭐", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.followup.send("❌ I cannot read the vouch channel history.", ephemeral=True)
+    except discord.HTTPException as error:
+        print(f"[VOUCH COUNT] HTTP error: {error}")
+        await interaction.followup.send("❌ Discord rejected the history request. Please try again.", ephemeral=True)
+    except Exception:
+        print("[VOUCH COUNT] Unexpected error")
+        traceback.print_exc()
+        await interaction.followup.send("❌ Something went wrong while counting vouches.", ephemeral=True)
 
 
 # =========================================================
 # STATUS
 # =========================================================
 
-@bot.tree.command(
-    name="status",
-    description="Update the shop status."
-)
-@app_commands.choices(
-    state=[
-        app_commands.Choice(
-            name="Available",
-            value="available"
-        ),
-
-        app_commands.Choice(
-            name="Busy",
-            value="busy"
-        ),
-
-        app_commands.Choice(
-            name="Closed",
-            value="closed"
-        )
-    ]
-)
-async def status(
-    interaction: discord.Interaction,
-    state: app_commands.Choice[str]
-):
-
+@bot.tree.command(name="status", description="Update the shop status.")
+@app_commands.choices(state=[
+    app_commands.Choice(name="Available", value="available"),
+    app_commands.Choice(name="Busy", value="busy"),
+    app_commands.Choice(name="Closed", value="closed")
+])
+async def status(interaction: discord.Interaction, state: app_commands.Choice[str]):
     if not is_staff(interaction):
+        return await safe_send(interaction, "❌ Only staff can update the status.", ephemeral=True)
+    guild = interaction.guild
+    if guild is None:
+        return await safe_send(interaction, "❌ This command can only be used in a server.", ephemeral=True)
 
-        return await interaction.response.send_message(
+    status_channel_id = config.get("status_channel_id")
+    channel = guild.get_channel(int(status_channel_id)) if status_channel_id else None
+    if not isinstance(channel, discord.TextChannel):
+        return await safe_send(interaction, "❌ Status channel isn't configured.", ephemeral=True)
 
-            "❌ Only staff can update the status.",
+    missing = missing_bot_permissions(channel, ("View Channel", "view_channel"), ("Send Messages", "send_messages"), ("Manage Channels", "manage_channels"))
+    if missing:
+        return await safe_send(interaction, "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in the status channel.", ephemeral=True)
 
-            ephemeral=True
-        )
-
-    status_channel_id = config.get(
-        "status_channel_id"
-    )
-
-    channel = (
-        interaction.guild.get_channel(
-            status_channel_id
-        )
-        if status_channel_id
-        else None
-    )
-
-    if not isinstance(
-        channel,
-        discord.TextChannel
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ Status channel isn't configured.",
-
-            ephemeral=True
-        )
-
-    if state.value == "available":
-
-        title = (
-            "🟢・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘢𝘷𝘢𝘪𝘭𝘢𝘣𝘭𝘦"
-        )
-
-        description = (
-            "Our shop is currently **OPEN** "
-            "for new orders! ♡"
-        )
-
-        color = GREEN
-
-        channel_name = "🟢-available"
-
-    elif state.value == "busy":
-
-        title = (
-            "🔴・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘣𝘶𝘴𝘺"
-        )
-
-        description = (
-            "Our shop is currently **BUSY**! ♡\n"
-            "Orders may take a little longer."
-        )
-
-        color = RED
-
-        channel_name = "🔴-busy"
-
-    else:
-
-        title = (
-            "⚪・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘤𝘭𝘰𝘴𝘦𝘥"
-        )
-
-        description = (
-            "Our shop is currently **CLOSED**! ♡"
-        )
-
-        color = GRAY
-
-        channel_name = "⚪-closed"
-
-    embed = discord.Embed(
-
-        title=title,
-
-        description=description,
-
-        color=color
-    )
-
-    await channel.send(
-        embed=embed
-    )
-
-    pending_renames[
-        channel.id
-    ] = channel_name
-
-    await interaction.response.send_message(
-
-        f"♡ Shop status changed to "
-        f"**{state.name}**.",
-
-        ephemeral=True
-    )
+    states = {
+        "available": ("🟢・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘢𝘷𝘢𝘪𝘭𝘢𝘣𝘭𝘦", "Our shop is currently **OPEN** for new orders! ♡", GREEN, "🟢-available"),
+        "busy": ("🔴・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘣𝘶𝘴𝘺", "Our shop is currently **BUSY**! ♡\nOrders may take a little longer.", RED, "🔴-busy"),
+        "closed": ("⚪・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘤𝘭𝘰𝘴𝘦𝘥", "Our shop is currently **CLOSED**! ♡", GRAY, "⚪-closed")
+    }
+    title, description, color, channel_name = states.get(state.value, states["closed"])
+    embed = discord.Embed(title=title, description=description, color=color)
+    try:
+        await channel.send(embed=embed)
+        pending_renames[channel.id] = channel_name
+        await interaction.response.send_message(f"♡ Shop status changed to **{state.name}**.", ephemeral=True)
+    except discord.Forbidden:
+        await safe_send(interaction, "❌ I cannot update the status channel. Check **Send Messages** and **Manage Channels**.", ephemeral=True)
+    except discord.HTTPException as error:
+        print(f"[STATUS] HTTP error: {error}")
+        await safe_send(interaction, "❌ Discord rejected the status update.", ephemeral=True)
 
 
 # =========================================================
@@ -2914,992 +2340,406 @@ class SayRoleView(discord.ui.View):
 
 
 class SaySendButton(discord.ui.Button):
-
     def __init__(self, view):
-
         self.say_view = view
+        super().__init__(label="Send Announcement ♡", style=discord.ButtonStyle.success, emoji="📢", row=4)
 
-        super().__init__(
-            label="Send Announcement ♡",
-            style=discord.ButtonStyle.success,
-            emoji="📢",
-            row=4
-        )
-
-    async def callback(
-        self,
-        interaction: discord.Interaction
-    ):
-
+    async def callback(self, interaction: discord.Interaction):
         view = self.say_view
-
         if interaction.user.id != view.original_user.id:
+            return await interaction.response.send_message("❌ Only the person who used `/say` can use this.", ephemeral=True)
+        if interaction.guild is None:
+            return await interaction.response.send_message("❌ This server is no longer available.", ephemeral=True)
+        if view.channel.guild.id != interaction.guild.id:
+            return await interaction.response.send_message("❌ Invalid announcement channel.", ephemeral=True)
 
-            return await interaction.response.send_message(
-                "❌ Only the person who used `/say` can use this.",
-                ephemeral=True
-            )
-
-        roles = view.selected_roles
-
+        roles = [r for r in view.selected_roles if r in interaction.guild.roles and not r.is_default()]
+        content = " ".join(role.mention for role in roles) if roles else None
         embed = discord.Embed(
-
             title="୨୧・♡ 𝒶𝓃𝓃𝑜𝓊𝓃𝒸𝑒𝓂𝑒𝓃𝓉 ♡・୨୧",
-
-            description=(
-                "╭・₊˚⊹ **hello everyone!** ⊹˚₊・╮\n\n"
-                f"{view.message}\n\n"
-                "╰・₊˚⊹ ♡ ⊹˚₊・╯"
-            ),
-
+            description="╭・₊˚⊹ **hello everyone!** ⊹˚₊・╮\n\n" + view.message + "\n\n╰・₊˚⊹ ♡ ⊹˚₊・╯",
             color=PINK
         )
-
-        embed.set_footer(
-            text="♡ thank you for being part of our community ♡"
-        )
-
+        embed.set_footer(text="♡ thank you for being part of our community ♡")
         embed.timestamp = discord.utils.utcnow()
 
-        await view.channel.send(
+        missing = missing_bot_permissions(view.channel, ("View Channel", "view_channel"), ("Send Messages", "send_messages"), ("Embed Links", "embed_links"), ("Mention Everyone", "mention_everyone")) if roles else missing_bot_permissions(view.channel, ("View Channel", "view_channel"), ("Send Messages", "send_messages"), ("Embed Links", "embed_links"))
+        if missing:
+            return await interaction.response.send_message("❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in that channel.", ephemeral=True)
 
-            content=(
-                " ".join(
-                    role.mention
-                    for role in roles
-                )
-                if roles
-                else None
-            ),
-
-            embed=embed,
-
-            allowed_mentions=discord.AllowedMentions(
-                roles=True
-            )
-        )
-
-        await interaction.response.edit_message(
-
-            content=(
-                f"♡ Announcement sent to "
-                f"{view.channel.mention}."
-            ),
-
-            view=None
-        )
-
-        view.stop()
+        try:
+            await view.channel.send(content=content, embed=embed, allowed_mentions=discord.AllowedMentions(roles=True))
+            await interaction.response.edit_message(content=f"♡ Announcement sent to {view.channel.mention}.", view=None)
+            view.stop()
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ I cannot send the announcement in that channel.", ephemeral=True)
+        except discord.HTTPException as error:
+            print(f"[SAY] HTTP error: {error}")
+            await interaction.response.send_message("❌ Discord rejected the announcement.", ephemeral=True)
+        except Exception:
+            print("[SAY] Unexpected error")
+            traceback.print_exc()
+            await interaction.response.send_message("❌ Something went wrong sending the announcement.", ephemeral=True)
 
 
-@bot.tree.command(
-    name="say",
-    description="Send an announcement."
-)
-async def say(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel,
-    message: str
-):
-
+@bot.tree.command(name="say", description="Send an announcement.")
+@app_commands.describe(channel="Channel to announce in", message="Announcement message")
+async def say(interaction: discord.Interaction, channel: discord.TextChannel, message: str):
     if not is_staff(interaction):
-
-        return await interaction.response.send_message(
-
-            "❌ Only staff can use `/say`.",
-
-            ephemeral=True
-        )
-
+        return await safe_send(interaction, "❌ Only staff can use `/say`.", ephemeral=True)
     guild = interaction.guild
+    if guild is None:
+        return await safe_send(interaction, "❌ This command can only be used in a server.", ephemeral=True)
+    message = message.strip()
+    if not message:
+        return await safe_send(interaction, "❌ The announcement cannot be empty.", ephemeral=True)
+    if len(message) > 4000:
+        return await safe_send(interaction, "❌ Keep the announcement under **4000 characters**.", ephemeral=True)
 
-    if not guild:
-
-        return await interaction.response.send_message(
-
-            "❌ This command can only be used in a server.",
-
-            ephemeral=True
-        )
+    missing = missing_bot_permissions(channel, ("View Channel", "view_channel"), ("Send Messages", "send_messages"), ("Embed Links", "embed_links"))
+    if missing:
+        return await safe_send(interaction, "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in that channel.", ephemeral=True)
 
     me = guild.me
+    manageable_roles = [role for role in guild.roles if not role.is_default() and (me is None or role < me.top_role)]
+    # Five component rows means at most four dropdowns plus the send button.
+    if len(manageable_roles) > 100:
+        return await safe_send(interaction, "❌ There are too many manageable roles for this announcement menu. Please reduce the number of roles or mention roles manually.", ephemeral=True)
 
-    manageable_roles = [
-        role
-        for role in guild.roles
-        if not role.is_default()
-        and (not me or role < me.top_role)
-    ]
-
-    if len(manageable_roles) > 125:
-
-        return await interaction.response.send_message(
-
-            "❌ This server has too many roles for the "
-            "multi-select menu. Discord allows a maximum "
-            "of 125 select options in one view.",
-
+    try:
+        view = SayRoleView(interaction, channel, message)
+        await interaction.response.send_message(
+            "୨୧・♡ **Choose the role(s) to mention** ♡・୨୧\n\nYou can select multiple roles, then press **Send Announcement ♡**.",
+            view=view,
             ephemeral=True
         )
-
-    view = SayRoleView(
-        interaction,
-        channel,
-        message
-    )
-
-    await interaction.response.send_message(
-
-        "୨୧・♡ **Choose the role(s) to mention** ♡・୨୧\n\n"
-        "You can select multiple roles, then press "
-        "**Send Announcement ♡**.",
-
-        view=view,
-
-        ephemeral=True
-    )
+    except discord.HTTPException as error:
+        print(f"[SAY] Could not open selector: {error}")
+        await safe_send(interaction, "❌ Discord could not create the announcement menu.", ephemeral=True)
 
 # =========================================================
 # WARN
 # =========================================================
 
-@bot.tree.command(
-    name="warn",
-    description="Warn a user."
-)
-@app_commands.describe(
-    user="User to warn",
-    reason="Reason"
-)
-async def warn(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    reason: str
-):
-
+@bot.tree.command(name="warn", description="Warn a user.")
+@app_commands.describe(user="User to warn", reason="Reason")
+async def warn(interaction: discord.Interaction, user: discord.Member, reason: str):
     if not is_staff(interaction):
+        return await safe_send(interaction, "❌ Only staff can warn users.", ephemeral=True)
+    reason = reason.strip() or "No reason provided"
+    if len(reason) > 500:
+        return await safe_send(interaction, "❌ Keep the reason under **500 characters**.", ephemeral=True)
+    hierarchy_error = member_hierarchy_error(interaction, user)
+    if hierarchy_error:
+        return await safe_send(interaction, hierarchy_error, ephemeral=True)
 
-        return await interaction.response.send_message(
-
-            "❌ Only staff can warn users.",
-
-            ephemeral=True
-        )
-
-    if user.id == interaction.user.id:
-
-        return await interaction.response.send_message(
-
-            "❌ You cannot warn yourself.",
-
-            ephemeral=True
-        )
-
-    if (
-        interaction.user != interaction.guild.owner
-        and user.top_role >= interaction.user.top_role
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ You cannot warn someone with "
-            "an equal or higher role.",
-
-            ephemeral=True
-        )
-
+    dm_sent = True
     try:
-
-        await user.send(
-
-            embed=discord.Embed(
-
-                title="⚠️ You have been warned",
-
-                description=(
-                    f"Reason: **{reason}**"
-                ),
-
-                color=RED
-            )
-        )
-
+        embed = discord.Embed(title="⚠️ You have been warned", description=f"Reason: **{discord.utils.escape_markdown(reason)}**", color=RED)
+        embed.set_footer(text="ali's adm house")
+        await user.send(embed=embed)
     except discord.Forbidden:
+        dm_sent = False
+    except discord.HTTPException as error:
+        print(f"[WARN] DM HTTP error: {error}")
+        dm_sent = False
 
-        pass
-
-    await interaction.response.send_message(
-
-        f"⚠️ Warned {user.mention}.\n"
-        f"Reason: **{reason}**",
-
-        ephemeral=True
-    )
+    suffix = " The user could not receive the DM." if not dm_sent else ""
+    await safe_send(interaction, f"⚠️ Warned {user.mention}.\nReason: **{discord.utils.escape_markdown(reason)}**{suffix}", ephemeral=True)
 
 
 # =========================================================
 # CLEAR
 # =========================================================
 
-@bot.tree.command(
-    name="clear",
-    description="Delete messages."
-)
-async def clear(
-    interaction: discord.Interaction,
-    amount: int
-):
-
+@bot.tree.command(name="clear", description="Delete recent messages.")
+@app_commands.describe(amount="Number of messages to delete (1-100)")
+async def clear(interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100]):
+    guild = interaction.guild
+    channel = interaction.channel
+    if guild is None or channel is None:
+        return await safe_send(interaction, "❌ This command can only be used in a server channel.", ephemeral=True)
     if not is_staff(interaction):
+        return await safe_send(interaction, "❌ Only staff can clear messages.", ephemeral=True)
+    if not isinstance(channel, discord.TextChannel):
+        return await safe_send(interaction, "❌ This command can only be used in a text channel.", ephemeral=True)
 
-        return await interaction.response.send_message(
+    missing = missing_bot_permissions(channel, ("View Channel", "view_channel"), ("Read Message History", "read_message_history"), ("Manage Messages", "manage_messages"))
+    if missing:
+        return await safe_send(interaction, "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in this channel.", ephemeral=True)
 
-            "❌ Only staff can clear messages.",
-
-            ephemeral=True
-        )
-
-    if amount < 1 or amount > 100:
-
-        return await interaction.response.send_message(
-
-            "❌ Amount must be between 1 and 100.",
-
-            ephemeral=True
-        )
-
-    if not isinstance(
-        interaction.channel,
-        discord.TextChannel
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ This isn't a text channel.",
-
-            ephemeral=True
-        )
-
-    await interaction.response.defer(
-        ephemeral=True
-    )
-
+    await interaction.response.defer(ephemeral=True)
     try:
-
-        # =====================================================
-        # GET THE EARLIEST / OLDEST MESSAGES FIRST
-        # =====================================================
-
-        messages = []
-
-        async for message in interaction.channel.history(
-            limit=amount,
-            oldest_first=True
-        ):
-
-            messages.append(
-                message
-            )
-
-            if len(messages) >= amount:
-                break
-
+        messages = [m async for m in channel.history(limit=int(amount))]
         if not messages:
+            return await interaction.followup.send("❌ There are no messages to delete.", ephemeral=True)
 
-            return await interaction.followup.send(
-
-                "❌ There are no messages to delete.",
-
-                ephemeral=True
-            )
-
-        # =====================================================
-        # DELETE THE SELECTED OLDEST MESSAGES
-        # =====================================================
-
+        cutoff = discord.utils.utcnow() - timedelta(days=14)
+        recent = [m for m in messages if m.created_at > cutoff]
+        old = [m for m in messages if m.created_at <= cutoff]
         deleted_count = 0
 
-        # Discord bulk deletion only works for messages
-        # newer than 14 days. Older messages must be deleted
-        # individually.
-        bulk_messages = []
-
-        for message in messages:
-
-            age = (
-                discord.utils.utcnow()
-                - message.created_at
-            )
-
-            if age.days < 14:
-
-                bulk_messages.append(
-                    message
-                )
-
-            else:
-
-                try:
-
-                    await message.delete()
-
-                    deleted_count += 1
-
-                except discord.NotFound:
-
-                    pass
-
-                except discord.Forbidden:
-
-                    pass
-
-                except discord.HTTPException as error:
-
-                    print(
-                        f"Old message delete error: {error}"
-                    )
-
-        # =====================================================
-        # BULK DELETE NEWER MESSAGES
-        # =====================================================
-
-        if bulk_messages:
-
+        if recent:
             try:
-
-                deleted = (
-                    await interaction.channel.delete_messages(
-                        bulk_messages
-                    )
-                )
-
-                deleted_count += len(
-                    deleted
-                )
-
-            except discord.HTTPException:
-
-                # Fallback to individual deletion
-                # if bulk deletion fails.
-                for message in bulk_messages:
-
+                deleted = await channel.delete_messages(recent)
+                deleted_count += len(deleted)
+            except discord.HTTPException as error:
+                print(f"[CLEAR] Bulk delete failed ({error}); falling back to individual deletes.")
+                for message in recent:
                     try:
-
-                        await message.delete()
-
+                        await message.delete(reason=f"Cleared by {interaction.user}")
                         deleted_count += 1
-
                     except discord.NotFound:
-
                         pass
-
                     except discord.Forbidden:
+                        print(f"[CLEAR] Forbidden deleting {message.id}")
+                    except discord.HTTPException as individual_error:
+                        print(f"[CLEAR] Individual delete failed for {message.id}: {individual_error}")
 
-                        pass
+        for message in old:
+            try:
+                await message.delete(reason=f"Cleared by {interaction.user}")
+                deleted_count += 1
+            except discord.NotFound:
+                pass
+            except discord.Forbidden:
+                print(f"[CLEAR] Forbidden deleting old message {message.id}")
+            except discord.HTTPException as error:
+                print(f"[CLEAR] Old message delete failed for {message.id}: {error}")
 
-                    except discord.HTTPException as error:
-
-                        print(
-                            f"Message delete error: {error}"
-                        )
-
-        # =====================================================
-        # RESULT
-        # =====================================================
-
-        await interaction.followup.send(
-
-            f"🗑️ Deleted **{deleted_count}** "
-            f"earliest message(s).",
-
-            ephemeral=True
-        )
-
+        if deleted_count == 0:
+            return await interaction.followup.send("❌ I couldn't delete any messages. Check **Manage Messages** and my role hierarchy.", ephemeral=True)
+        await interaction.followup.send(f"🗑️ Deleted **{deleted_count}** message(s).", ephemeral=True)
     except discord.Forbidden:
-
-        await interaction.followup.send(
-
-            "❌ I don't have permission "
-            "to delete messages.",
-
-            ephemeral=True
-        )
-
+        await interaction.followup.send("❌ Discord denied the deletion. Check **Manage Messages** and **Read Message History**.", ephemeral=True)
     except discord.HTTPException as error:
-
-        print(
-            f"Clear command error: {error}"
-        )
-
-        await interaction.followup.send(
-
-            "❌ Discord returned an error "
-            "while deleting messages.",
-
-            ephemeral=True
-        )
+        print(f"[CLEAR] HTTP error: {error}")
+        await interaction.followup.send(f"❌ Discord returned an error while clearing messages: `{error}`", ephemeral=True)
+    except Exception:
+        print("[CLEAR] Unexpected error")
+        traceback.print_exc()
+        await interaction.followup.send("❌ Something went wrong while clearing messages. Check the bot console for the exact error.", ephemeral=True)
 
 
 # =========================================================
 # GIVE ROLE
 # =========================================================
 
-@bot.tree.command(
-    name="giverole",
-    description="Give a role to a user."
-)
-async def giverole(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    role: discord.Role
-):
-
+@bot.tree.command(name="giverole", description="Give a role to a user.")
+async def giverole(interaction: discord.Interaction, user: discord.Member, role: discord.Role):
     if not is_staff(interaction):
-
-        return await interaction.response.send_message(
-
-            "❌ Only staff can give roles.",
-
-            ephemeral=True
-        )
-
-    if role.is_default():
-
-        return await interaction.response.send_message(
-
-            "❌ You cannot give @everyone.",
-
-            ephemeral=True
-        )
-
-    if (
-        interaction.guild.me
-        and role >= interaction.guild.me.top_role
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ I cannot give that role because "
-            "it is too high.",
-
-            ephemeral=True
-        )
-
+        return await safe_send(interaction, "❌ Only staff can give roles.", ephemeral=True)
+    guild = interaction.guild
+    if guild is None:
+        return await safe_send(interaction, "❌ This command can only be used in a server.", ephemeral=True)
+    if role.is_default() or role.managed:
+        return await safe_send(interaction, "❌ You cannot give @everyone or a managed/integration role.", ephemeral=True)
+    me = guild.me
+    if me is None or not me.guild_permissions.manage_roles:
+        return await safe_send(interaction, "❌ I need **Manage Roles** to give roles.", ephemeral=True)
+    if role >= me.top_role:
+        return await safe_send(interaction, "❌ I cannot give that role because it is too high for my role hierarchy.", ephemeral=True)
+    actor = interaction.user
+    if actor.id != guild.owner_id and role >= actor.top_role and not actor.guild_permissions.administrator:
+        return await safe_send(interaction, "❌ You cannot give a role equal to or higher than your highest role.", ephemeral=True)
+    if role in user.roles:
+        return await safe_send(interaction, f"❌ {user.mention} already has {role.mention}.", ephemeral=True)
     try:
-
-        await user.add_roles(
-            role,
-            reason=(
-                f"Given by {interaction.user}"
-            )
-        )
-
-        await interaction.response.send_message(
-
-            f"✅ Gave {user.mention} "
-            f"{role.mention}.",
-
-            ephemeral=True
-        )
-
+        await user.add_roles(role, reason=f"Given by {interaction.user}")
+        await safe_send(interaction, f"✅ Gave {user.mention} {role.mention}.", ephemeral=True)
     except discord.Forbidden:
-
-        await interaction.response.send_message(
-
-            "❌ I cannot give that role.",
-
-            ephemeral=True
-        )
+        await safe_send(interaction, "❌ Discord denied the role change. Check **Manage Roles** and hierarchy.", ephemeral=True)
+    except discord.HTTPException as error:
+        print(f"[GIVEROLE] HTTP error: {error}")
+        await safe_send(interaction, "❌ Discord rejected the role change.", ephemeral=True)
 
 
 # =========================================================
 # MUTE
 # =========================================================
 
-@bot.tree.command(
-    name="mute",
-    description="Timeout a user for 10 minutes."
-)
-async def mute(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    reason: str = "No reason provided"
-):
-
+@bot.tree.command(name="mute", description="Timeout a user for 10 minutes.")
+async def mute(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
     if not is_staff(interaction):
-
-        return await interaction.response.send_message(
-
-            "❌ Only staff can mute users.",
-
-            ephemeral=True
-        )
-
-    if user.id == interaction.user.id:
-
-        return await interaction.response.send_message(
-
-            "❌ You cannot mute yourself.",
-
-            ephemeral=True
-        )
-
-    if (
-        interaction.user != interaction.guild.owner
-        and user.top_role >= interaction.user.top_role
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ You cannot mute someone with "
-            "an equal or higher role.",
-
-            ephemeral=True
-        )
-
-    if (
-        interaction.guild.me
-        and user.top_role >= interaction.guild.me.top_role
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ I cannot mute that user.",
-
-            ephemeral=True
-        )
-
+        return await safe_send(interaction, "❌ Only staff can mute users.", ephemeral=True)
+    guild = interaction.guild
+    if guild is None:
+        return await safe_send(interaction, "❌ This command can only be used in a server.", ephemeral=True)
+    hierarchy_error = member_hierarchy_error(interaction, user)
+    if hierarchy_error:
+        return await safe_send(interaction, hierarchy_error, ephemeral=True)
+    reason = reason.strip() or "No reason provided"
+    if len(reason) > 500:
+        return await safe_send(interaction, "❌ Keep the reason under **500 characters**.", ephemeral=True)
+    me = guild.me
+    if me is None or not me.guild_permissions.moderate_members:
+        return await safe_send(interaction, "❌ I need **Moderate Members** permission to mute/timeout users.", ephemeral=True)
     try:
-
-        await user.timeout(
-
-            discord.utils.utcnow()
-            + timedelta(minutes=10),
-
-            reason=reason
-        )
-
-        await interaction.response.send_message(
-
-            f"🔇 Muted {user.mention} for "
-            f"**10 minutes**.\n"
-            f"Reason: **{reason}**",
-
-            ephemeral=True
-        )
-
+        await user.timeout(discord.utils.utcnow() + timedelta(minutes=10), reason=reason)
+        await safe_send(interaction, f"🔇 Muted {user.mention} for **10 minutes**.\nReason: **{discord.utils.escape_markdown(reason)}**", ephemeral=True)
     except discord.Forbidden:
-
-        await interaction.response.send_message(
-
-            "❌ I don't have permission "
-            "to timeout that user.",
-
-            ephemeral=True
-        )
+        await safe_send(interaction, "❌ Discord denied the timeout. Check **Moderate Members** and role hierarchy.", ephemeral=True)
+    except discord.HTTPException as error:
+        print(f"[MUTE] HTTP error: {error}")
+        await safe_send(interaction, "❌ Discord rejected the timeout.", ephemeral=True)
 
 
 # =========================================================
 # BAN
 # =========================================================
 
-@bot.tree.command(
-    name="ban",
-    description="Ban a user."
-)
-async def ban(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    reason: str = "No reason provided"
-):
-
+@bot.tree.command(name="ban", description="Ban a user.")
+async def ban(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
     if not is_staff(interaction):
-
-        return await interaction.response.send_message(
-
-            "❌ Only staff can ban users.",
-
-            ephemeral=True
-        )
-
-    if user.id == interaction.user.id:
-
-        return await interaction.response.send_message(
-
-            "❌ You cannot ban yourself.",
-
-            ephemeral=True
-        )
-
-    if (
-        interaction.user != interaction.guild.owner
-        and user.top_role >= interaction.user.top_role
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ You cannot ban someone with "
-            "an equal or higher role.",
-
-            ephemeral=True
-        )
-
-    if (
-        interaction.guild.me
-        and user.top_role >= interaction.guild.me.top_role
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ I cannot ban that user.",
-
-            ephemeral=True
-        )
-
+        return await safe_send(interaction, "❌ Only staff can ban users.", ephemeral=True)
+    guild = interaction.guild
+    if guild is None:
+        return await safe_send(interaction, "❌ This command can only be used in a server.", ephemeral=True)
+    hierarchy_error = member_hierarchy_error(interaction, user)
+    if hierarchy_error:
+        return await safe_send(interaction, hierarchy_error, ephemeral=True)
+    reason = reason.strip() or "No reason provided"
+    if len(reason) > 500:
+        return await safe_send(interaction, "❌ Keep the reason under **500 characters**.", ephemeral=True)
+    me = guild.me
+    if me is None or not me.guild_permissions.ban_members:
+        return await safe_send(interaction, "❌ I need **Ban Members** permission.", ephemeral=True)
     try:
-
-        await interaction.guild.ban(
-            user,
-            reason=reason
-        )
-
-        await interaction.response.send_message(
-
-            f"🚫 Banned {user.mention}.\n"
-            f"Reason: **{reason}**",
-
-            ephemeral=True
-        )
-
+        await guild.ban(user, reason=reason)
+        await safe_send(interaction, f"🚫 Banned {user.mention}.\nReason: **{discord.utils.escape_markdown(reason)}**", ephemeral=True)
     except discord.Forbidden:
-
-        await interaction.response.send_message(
-
-            "❌ I don't have permission "
-            "to ban that user.",
-
-            ephemeral=True
-        )
+        await safe_send(interaction, "❌ Discord denied the ban. Check **Ban Members** and role hierarchy.", ephemeral=True)
+    except discord.HTTPException as error:
+        print(f"[BAN] HTTP error: {error}")
+        await safe_send(interaction, "❌ Discord rejected the ban.", ephemeral=True)
 
 
 # =========================================================
 # KICK
 # =========================================================
 
-@bot.tree.command(
-    name="kick",
-    description="Kick a user."
-)
-async def kick(
-    interaction: discord.Interaction,
-    user: discord.Member,
-    reason: str = "No reason provided"
-):
-
+@bot.tree.command(name="kick", description="Kick a user.")
+async def kick(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
     if not is_staff(interaction):
-
-        return await interaction.response.send_message(
-
-            "❌ Only staff can kick users.",
-
-            ephemeral=True
-        )
-
-    if user.id == interaction.user.id:
-
-        return await interaction.response.send_message(
-
-            "❌ You cannot kick yourself.",
-
-            ephemeral=True
-        )
-
-    if (
-        interaction.user != interaction.guild.owner
-        and user.top_role >= interaction.user.top_role
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ You cannot kick someone with "
-            "an equal or higher role.",
-
-            ephemeral=True
-        )
-
-    if (
-        interaction.guild.me
-        and user.top_role >= interaction.guild.me.top_role
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ I cannot kick that user.",
-
-            ephemeral=True
-        )
-
+        return await safe_send(interaction, "❌ Only staff can kick users.", ephemeral=True)
+    guild = interaction.guild
+    if guild is None:
+        return await safe_send(interaction, "❌ This command can only be used in a server.", ephemeral=True)
+    hierarchy_error = member_hierarchy_error(interaction, user)
+    if hierarchy_error:
+        return await safe_send(interaction, hierarchy_error, ephemeral=True)
+    reason = reason.strip() or "No reason provided"
+    if len(reason) > 500:
+        return await safe_send(interaction, "❌ Keep the reason under **500 characters**.", ephemeral=True)
+    me = guild.me
+    if me is None or not me.guild_permissions.kick_members:
+        return await safe_send(interaction, "❌ I need **Kick Members** permission.", ephemeral=True)
     try:
-
-        await user.kick(
-            reason=reason
-        )
-
-        await interaction.response.send_message(
-
-            f"👢 Kicked {user.mention}.\n"
-            f"Reason: **{reason}**",
-
-            ephemeral=True
-        )
-
+        await user.kick(reason=reason)
+        await safe_send(interaction, f"👢 Kicked {user.mention}.\nReason: **{discord.utils.escape_markdown(reason)}**", ephemeral=True)
     except discord.Forbidden:
-
-        await interaction.response.send_message(
-
-            "❌ I don't have permission "
-            "to kick that user.",
-
-            ephemeral=True
-        )
+        await safe_send(interaction, "❌ Discord denied the kick. Check **Kick Members** and role hierarchy.", ephemeral=True)
+    except discord.HTTPException as error:
+        print(f"[KICK] HTTP error: {error}")
+        await safe_send(interaction, "❌ Discord rejected the kick.", ephemeral=True)
 
 
 # =========================================================
 # LOCK CHANNEL
 # =========================================================
 
-@bot.tree.command(
-    name="lockchannel",
-    description="Lock a channel."
-)
-async def lockchannel(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel | None = None,
-    reason: str = "No reason provided"
-):
-
+@bot.tree.command(name="lockchannel", description="Lock a channel.")
+async def lockchannel(interaction: discord.Interaction, channel: discord.TextChannel | None = None, reason: str = "No reason provided"):
     if not is_staff(interaction):
-
-        return await interaction.response.send_message(
-
-            "❌ Only staff can lock channels.",
-
-            ephemeral=True
-        )
-
-    target = (
-        channel
-        or interaction.channel
-    )
-
-    if not isinstance(
-        target,
-        discord.TextChannel
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ Invalid text channel.",
-
-            ephemeral=True
-        )
-
+        return await safe_send(interaction, "❌ Only staff can lock channels.", ephemeral=True)
+    guild = interaction.guild
+    if guild is None:
+        return await safe_send(interaction, "❌ This command can only be used in a server.", ephemeral=True)
+    target = channel or interaction.channel
+    if not isinstance(target, discord.TextChannel):
+        return await safe_send(interaction, "❌ Invalid text channel.", ephemeral=True)
+    me = guild.me
+    if me is None or not me.guild_permissions.manage_channels:
+        return await safe_send(interaction, "❌ I need **Manage Channels** permission.", ephemeral=True)
+    missing = missing_bot_permissions(target, ("View Channel", "view_channel"), ("Manage Channels", "manage_channels"))
+    if missing:
+        return await safe_send(interaction, "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in that channel.", ephemeral=True)
+    reason = reason.strip() or "No reason provided"
     try:
-
-        await target.set_permissions(
-
-            interaction.guild.default_role,
-
-            send_messages=False,
-
-            reason=reason
-        )
-
-        await interaction.response.send_message(
-
-            f"🔒 Locked {target.mention}.\n"
-            f"Reason: **{reason}**",
-
-            ephemeral=True
-        )
-
+        await target.set_permissions(guild.default_role, send_messages=False, reason=reason)
+        await safe_send(interaction, f"🔒 Locked {target.mention}.\nReason: **{discord.utils.escape_markdown(reason)}**", ephemeral=True)
     except discord.Forbidden:
-
-        await interaction.response.send_message(
-
-            "❌ I don't have permission "
-            "to lock that channel.",
-
-            ephemeral=True
-        )
+        await safe_send(interaction, "❌ Discord denied the channel lock. Check **Manage Channels**.", ephemeral=True)
+    except discord.HTTPException as error:
+        print(f"[LOCK] HTTP error: {error}")
+        await safe_send(interaction, "❌ Discord rejected the channel lock.", ephemeral=True)
 
 
 # =========================================================
 # UNLOCK CHANNEL
 # =========================================================
 
-@bot.tree.command(
-    name="unlockchannel",
-    description="Unlock a channel."
-)
-async def unlockchannel(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel | None = None,
-    reason: str = "No reason provided"
-):
-
+@bot.tree.command(name="unlockchannel", description="Unlock a channel.")
+async def unlockchannel(interaction: discord.Interaction, channel: discord.TextChannel | None = None, reason: str = "No reason provided"):
     if not is_staff(interaction):
-
-        return await interaction.response.send_message(
-
-            "❌ Only staff can unlock channels.",
-
-            ephemeral=True
-        )
-
-    target = (
-        channel
-        or interaction.channel
-    )
-
-    if not isinstance(
-        target,
-        discord.TextChannel
-    ):
-
-        return await interaction.response.send_message(
-
-            "❌ Invalid text channel.",
-
-            ephemeral=True
-        )
-
+        return await safe_send(interaction, "❌ Only staff can unlock channels.", ephemeral=True)
+    guild = interaction.guild
+    if guild is None:
+        return await safe_send(interaction, "❌ This command can only be used in a server.", ephemeral=True)
+    target = channel or interaction.channel
+    if not isinstance(target, discord.TextChannel):
+        return await safe_send(interaction, "❌ Invalid text channel.", ephemeral=True)
+    me = guild.me
+    if me is None or not me.guild_permissions.manage_channels:
+        return await safe_send(interaction, "❌ I need **Manage Channels** permission.", ephemeral=True)
+    reason = reason.strip() or "No reason provided"
     try:
-
-        await target.set_permissions(
-
-            interaction.guild.default_role,
-
-            send_messages=True,
-
-            reason=reason
-        )
-
-        await interaction.response.send_message(
-
-            f"🔓 Unlocked {target.mention}.\n"
-            f"Reason: **{reason}**",
-
-            ephemeral=True
-        )
-
+        await target.set_permissions(guild.default_role, send_messages=None, reason=reason)
+        await safe_send(interaction, f"🔓 Unlocked {target.mention}.\nReason: **{discord.utils.escape_markdown(reason)}**", ephemeral=True)
     except discord.Forbidden:
-
-        await interaction.response.send_message(
-
-            "❌ I don't have permission "
-            "to unlock that channel.",
-
-            ephemeral=True
-        )
+        await safe_send(interaction, "❌ Discord denied the channel unlock. Check **Manage Channels**.", ephemeral=True)
+    except discord.HTTPException as error:
+        print(f"[UNLOCK] HTTP error: {error}")
+        await safe_send(interaction, "❌ Discord rejected the channel unlock.", ephemeral=True)
 
 
 # =========================================================
 # PREFIX VOUCH
 # =========================================================
 
-@bot.command(
-    name="vouch"
-)
-async def vouch_prefix(
-    ctx,
-    *,
-    message: str = None
-):
+@bot.command(name="vouch")
+async def vouch_prefix(ctx, *, message: str = None):
+    if message is None or not message.strip():
+        return await ctx.send("❌ Please include a vouch message!\n\nExample:\n`!vouch Great service! ♡`", delete_after=10)
+    message = message.strip()
+    if len(message) > 1000:
+        return await ctx.send("❌ Please keep your vouch under 1000 characters.", delete_after=10)
+    if ctx.guild is None:
+        return await ctx.send("❌ This command can only be used in a server.", delete_after=10)
 
-    if message is None:
-
-        return await ctx.send(
-
-            "❌ Please include a vouch message!\n\n"
-            "Example:\n"
-            "`!vouch Great service! ♡`",
-
-            delete_after=10
-        )
-
-    channel_id = config.get(
-        "vouch_channel_id"
-    )
-
-    channel = (
-        ctx.guild.get_channel(
-            channel_id
-        )
-        if channel_id
-        and ctx.guild
-        else None
-    )
-
-    if not isinstance(
-        channel,
-        discord.TextChannel
-    ):
-
-        return await ctx.send(
-            "❌ Vouch channel isn't configured."
-        )
+    channel_id = config.get("vouch_channel_id")
+    channel = ctx.guild.get_channel(int(channel_id)) if channel_id else None
+    if not isinstance(channel, discord.TextChannel):
+        return await ctx.send("❌ Vouch channel isn't configured.")
 
     embed = discord.Embed(
-
-        title=(
-            "୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡"
-        ),
-
-        description=(
-            f"**{message}**\n\n"
-
-            "୨୧ **𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳**\n"
-            f"{ctx.author.mention}\n\n"
-
-            "Thank you so much! ♡"
-        ),
-
+        title="୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡",
+        description=f"**{discord.utils.escape_markdown(message)}**\n\n୨୧ **𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳**\n{ctx.author.mention}\n\nThank you so much! ♡",
         color=PINK
     )
-
-    embed.set_author(
-        name=(
-            "୨୧ 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦 ♡"
-        )
-    )
-
-    await channel.send(
-
-        content=ctx.author.mention,
-
-        embed=embed,
-
-        allowed_mentions=discord.AllowedMentions(
-            users=[ctx.author]
-        )
-    )
-
+    embed.set_author(name="୨୧ 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦 ♡")
     try:
-
-        await ctx.message.delete()
-
+        await channel.send(content=ctx.author.mention, embed=embed, allowed_mentions=discord.AllowedMentions(users=[ctx.author]))
+        try:
+            await ctx.message.delete()
+        except discord.Forbidden:
+            pass
+        await ctx.send(f"♡ Thank you {ctx.author.mention}, your vouch has been posted! ⭐", delete_after=5)
     except discord.Forbidden:
-
-        pass
-
-    await ctx.send(
-
-        f"♡ Thank you {ctx.author.mention}, "
-        "your vouch has been posted! ⭐",
-
-        delete_after=5
-    )
+        await ctx.send("❌ I cannot post in the vouch channel. Check my permissions.", delete_after=10)
+    except discord.HTTPException as error:
+        print(f"[PREFIX VOUCH] HTTP error: {error}")
+        await ctx.send("❌ Discord rejected the vouch.", delete_after=10)
 
 
 # =========================================================
@@ -3907,61 +2747,84 @@ async def vouch_prefix(
 # =========================================================
 
 @bot.event
-async def on_command_error(
-    ctx,
-    error
-):
-
-    if isinstance(
-        error,
-        commands.CommandNotFound
-    ):
-
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
         return
-
-    print(
-        f"Prefix command error: {error}"
-    )
+    if isinstance(error, commands.MissingRequiredArgument):
+        return await ctx.send(f"❌ Missing argument: **{error.param.name}**.", delete_after=10)
+    if isinstance(error, commands.BadArgument):
+        return await ctx.send("❌ One of the command arguments is invalid.", delete_after=10)
+    print(f"[PREFIX COMMAND ERROR] {type(error).__name__}: {error}")
+    traceback.print_exception(type(error), error, error.__traceback__)
 
 
 @bot.tree.error
-async def on_app_command_error(
-    interaction: discord.Interaction,
-    error: app_commands.AppCommandError
-):
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    original = error
+    while hasattr(original, "original"):
+        original = original.original
+    command_name = interaction.command.name if interaction.command else "unknown"
+    print(f"\n[SLASH COMMAND ERROR]\nCommand: /{command_name}\nUser: {interaction.user} ({interaction.user.id})\nGuild: {interaction.guild} ({interaction.guild.id if interaction.guild else 'DM'})\nType: {type(original).__name__}\nError: {original}")
+    traceback.print_exception(type(original), original, original.__traceback__)
 
-    print(
-        f"Slash command error: {error}"
-    )
+    if isinstance(original, app_commands.CommandOnCooldown):
+        message = f"⏳ Please wait {original.retry_after:.1f}s before using this command again."
+    elif isinstance(original, app_commands.MissingPermissions):
+        message = "❌ You don't have the required permissions for this command."
+    elif isinstance(original, app_commands.BotMissingPermissions):
+        message = "❌ I am missing these permissions: **" + ", ".join(original.missing_permissions) + "**"
+    elif isinstance(original, app_commands.TransformerError):
+        message = "❌ One of the command options has an invalid value."
+    elif isinstance(original, discord.Forbidden):
+        message = "❌ Discord denied that action. Please check my permissions and role hierarchy."
+    elif isinstance(original, discord.HTTPException):
+        message = f"❌ Discord returned an error: `{original}`"
+    elif isinstance(original, TypeError):
+        message = "❌ That command received an invalid option. Please try the command again."
+    else:
+        message = "❌ Something went wrong while running that command. The bot console now contains the exact error."
+    await safe_send(interaction, message, ephemeral=True)
 
-    try:
 
-        if interaction.response.is_done():
+# =========================================================
+# READY
+# =========================================================
 
-            await interaction.followup.send(
-
-                "❌ Something went wrong "
-                "while running that command.",
-
-                ephemeral=True
-            )
-
-        else:
-
-            await interaction.response.send_message(
-
-                "❌ Something went wrong "
-                "while running that command.",
-
-                ephemeral=True
-            )
-
-    except Exception as send_error:
-
-        print(
-            f"Could not send error message: "
-            f"{send_error}"
-        )
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    if not getattr(bot, "_persistent_views_loaded", False):
+        try:
+            bot.add_view(TicketView())
+            bot.add_view(CloseTicketView())
+            bot._persistent_views_loaded = True
+        except Exception:
+            print("[READY] Failed to load persistent views")
+            traceback.print_exc()
+    if not hasattr(bot, "_rename_task") or bot._rename_task.done():
+        bot._rename_task = asyncio.create_task(process_channel_renames())
+    if not getattr(bot, "_commands_synced", False):
+        try:
+            guild_id = os.getenv("DISCORD_GUILD_ID")
+            if guild_id:
+                synced = await bot.tree.sync(guild=discord.Object(id=int(guild_id)))
+                print(f"Successfully synced {len(synced)} slash commands to guild {guild_id}.")
+            else:
+                synced = await bot.tree.sync()
+                print(f"Successfully synced {len(synced)} global slash commands.")
+            bot._commands_synced = True
+        except ValueError:
+            print("[READY] DISCORD_GUILD_ID is invalid; falling back to global sync.")
+            try:
+                synced = await bot.tree.sync()
+                bot._commands_synced = True
+                print(f"Successfully synced {len(synced)} global slash commands.")
+            except Exception:
+                print("[READY] Global command sync failed")
+                traceback.print_exc()
+        except Exception:
+            print("[READY] Command sync failed")
+            traceback.print_exc()
 
 
 # =========================================================
