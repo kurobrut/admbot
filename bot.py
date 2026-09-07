@@ -534,8 +534,7 @@ class ProofProcessingError(RuntimeError):
 
 
 def blur_proof_text(
-    image_data: bytes,
-    blur_everything: bool = True
+    image_data: bytes
 ) -> bytes:
     """
     Card-aware username blur.
@@ -2200,8 +2199,7 @@ async def proof(interaction: discord.Interaction, image: discord.Attachment):
 
         blurred_data = await asyncio.to_thread(
             blur_proof_text,
-            image_data,
-            bool(config.get("blur_everything", True))
+            image_data
         )
         file = discord.File(io.BytesIO(blurred_data), filename="proof.png")
         await proof_channel.send(
@@ -2293,7 +2291,7 @@ async def vouchcount(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     count = 0
     try:
-        async for msg in channel.history(limit=None):
+        async for msg in channel.history(limit=5000):
             if msg.author == bot.user and any(
                 embed.title == "୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡" for embed in msg.embeds
             ):
