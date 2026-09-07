@@ -3,8 +3,6 @@ import json
 import io
 import asyncio
 import traceback
-import urllib.error
-import urllib.request
 from datetime import timedelta
 from threading import Thread
 
@@ -348,8 +346,11 @@ def blur_region(
     )
 
 
-# Download the watermark from the repository at runtime.
-WATERMARK_URL = "https://raw.githubusercontent.com/kurobrut/admbot/main/watermark.png"
+# Keep the watermark beside bot.py so deployment only needs the project files.
+WATERMARK_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "watermark.png"
+)
 _watermark_cache = None
 
 
@@ -361,52 +362,53 @@ def load_watermark():
         return _watermark_cache.copy()
 
     try:
-        with urllib.request.urlopen(WATERMARK_URL, timeout=15) as response:
-            watermark_data = response.read()
-            watermark = Image.open(io.BytesIO(watermark_data)).convert("RGBA")
+        watermark = Image.open(WATERMARK_PATH).convert("RGBA")
 
-            watermark_pixels = np.array(watermark)
-            black_background = np.max(
-                watermark_pixels[:, :, :3],
-                axis=2
-            ) < 35
-            watermark_pixels[black_background, 3] = 0
-            watermark = Image.fromarray(watermark_pixels, "RGBA")
+        watermark_pixels = np.array(watermark)
+        black_background = np.max(
+            watermark_pixels[:, :, :3],
+            axis=2
+        ) < 35
+        watermark_pixels[black_background, 3] = 0
+        watermark = Image.fromarray(watermark_pixels, "RGBA")
 
         if watermark.width <= 0 or watermark.height <= 0:
             return None
 
         _watermark_cache = watermark.copy()
         return watermark
-    except (OSError, ValueError, urllib.error.URLError) as error:
+    except (OSError, ValueError) as error:
         print(f"[PROOF] Could not load watermark: {error}")
         return None
 
 
 def apply_watermark(image):
-    """Cover the complete proof image while preserving watermark proportions."""
+    """Place a small centered watermark while preserving its proportions."""
     watermark = load_watermark()
     if watermark is None:
         return image
 
     width, height = image.size
-    scale = max(width / watermark.width, height / watermark.height)
+    target_width = max(1, int(width * 0.30))
+    scale = target_width / watermark.width
     watermark_size = (
         max(1, int(watermark.width * scale)),
         max(1, int(watermark.height * scale))
     )
     watermark = watermark.resize(watermark_size, Image.Resampling.LANCZOS)
 
-    left = max(0, (watermark.width - width) // 2)
-    top = max(0, (watermark.height - height) // 2)
-    watermark = watermark.crop((left, top, left + width, top + height))
     alpha = watermark.getchannel("A").point(
         lambda value: value * 105 // 255
     )
     watermark.putalpha(alpha)
 
     base = image.convert("RGBA")
-    return Image.alpha_composite(base, watermark)
+    position = (
+        (width - watermark.width) // 2,
+        (height - watermark.height) // 2
+    )
+    base.alpha_composite(watermark, dest=position)
+    return base
 
 
 def is_date_or_time(text):
