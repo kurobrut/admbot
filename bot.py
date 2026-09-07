@@ -65,6 +65,18 @@ def keep_alive():
 
 CONFIG_FILE = os.getenv("CONFIG_FILE", "config.json")
 
+
+def environment_int(name, default=None):
+    """Read an integer environment value without crashing startup."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"[CONFIG] Ignoring invalid {name}: {raw!r}")
+        return default
+
 # Render and other cloud hosts may use an ephemeral filesystem.  These
 # environment variables are therefore the persistent source of truth for
 # server/channel/role IDs.  Set them once in the hosting dashboard and they
@@ -81,40 +93,17 @@ CONFIG_ENV_KEYS = {
 }
 
 DEFAULT_CONFIG = {
-    "panel_channel_id": int(
-        os.getenv("PANEL_CHANNEL_ID", 0)
-    ) or None,
-
-    "ticket_category_id": int(
-        os.getenv("TICKET_CATEGORY_ID", 0)
-    ) or None,
-
-    "vouch_channel_id": int(
-        os.getenv("VOUCH_CHANNEL_ID", 0)
-    ) or None,
-
-    "status_channel_id": int(
-        os.getenv("STATUS_CHANNEL_ID", 0)
-    ) or None,
-
-    "welcome_goodbye_channel_id": int(
-        os.getenv("WELCOME_GOODBYE_CHANNEL_ID", 0)
-    ) or None,
-
-    "proof_channel_id": int(
-        os.getenv("PROOF_CHANNEL_ID", 0)
-    ) or None,
-
-    "staff_role_id": int(
-        os.getenv("STAFF_ROLE_ID", 0)
-    ) or None,
-
-    "customer_role_id": int(
-        os.getenv(
-            "CUSTOMER_ROLE_ID",
-            1545438540362555463
-        )
-    ) or 1545438540362555463
+    "panel_channel_id": environment_int("PANEL_CHANNEL_ID"),
+    "ticket_category_id": environment_int("TICKET_CATEGORY_ID"),
+    "vouch_channel_id": environment_int("VOUCH_CHANNEL_ID"),
+    "status_channel_id": environment_int("STATUS_CHANNEL_ID"),
+    "welcome_goodbye_channel_id": environment_int("WELCOME_GOODBYE_CHANNEL_ID"),
+    "proof_channel_id": environment_int("PROOF_CHANNEL_ID"),
+    "staff_role_id": environment_int("STAFF_ROLE_ID"),
+    "customer_role_id": environment_int(
+        "CUSTOMER_ROLE_ID",
+        1545438540362555463
+    )
 }
 
 
@@ -540,6 +529,10 @@ def calculate_dark_ratio(
     return dark_pixels / roi.size
 
 
+class ProofProcessingError(RuntimeError):
+    """Raised when a proof cannot be safely blurred."""
+
+
 def blur_proof_text(
     image_data: bytes,
     blur_everything: bool = True
@@ -566,7 +559,9 @@ def blur_proof_text(
         width, height = original.size
 
         if width <= 0 or height <= 0:
-            return image_data
+            raise ProofProcessingError(
+                "No proof cards were detected; refusing to send an unblurred image."
+            )
 
         rgb = np.array(original)
 
@@ -876,7 +871,9 @@ def blur_proof_text(
                 "returning original image."
             )
 
-            return image_data
+            raise ProofProcessingError(
+                "No proof cards were detected; refusing to send an unblurred image."
+            )
 
         # =========================================================
         # 2. FIND USERNAME INSIDE EACH CARD ONLY
@@ -1420,7 +1417,9 @@ def blur_proof_text(
         )
 
         if not username_regions:
-            print("[PROOF] No card regions found; watermarking without blur.")
+            raise ProofProcessingError(
+                "No username regions were detected; refusing to send an unblurred image."
+            )
 
         # =========================================================
         # 3. BLUR ONLY THE DETECTED USERNAME REGIONS
@@ -1519,7 +1518,9 @@ def blur_proof_text(
             f"Proof processing error: {error}"
         )
 
-        return image_data
+        raise ProofProcessingError(
+            "Proof processing failed; refusing to send the original image."
+        ) from error
 
 
 # =========================================================
@@ -2197,19 +2198,22 @@ async def proof(interaction: discord.Interaction, image: discord.Attachment):
         with Image.open(io.BytesIO(image_data)) as check:
             check.verify()
 
-        blurred_data = blur_proof_text(
+        blurred_data = await asyncio.to_thread(
+            blur_proof_text,
             image_data,
-            blur_everything=bool(config.get("blur_everything", True))
+            bool(config.get("blur_everything", True))
         )
         file = discord.File(io.BytesIO(blurred_data), filename="proof.png")
         await proof_channel.send(
-            content=f"♡ **New Proof!**\nThank you so much! ♡\nSubmitted by {interaction.user.mention}",
-            file=file,
-            allowed_mentions=discord.AllowedMentions(users=[interaction.user])
+            content="♡ **New Proof!**\nThank you so much! ♡",
+            file=file
         )
         await interaction.followup.send("♡ Your proof has been submitted!", ephemeral=True)
     except (OSError, ValueError):
         await interaction.followup.send("❌ That image could not be read. Please upload a valid PNG/JPG/WEBP image.", ephemeral=True)
+    except ProofProcessingError as error:
+        print(f"[PROOF] {error}")
+        await interaction.followup.send("❌ I could not safely blur that proof image, so it was not uploaded. Please try a clearer screenshot.", ephemeral=True)
     except discord.Forbidden:
         await interaction.followup.send("❌ I cannot post the processed proof. Check **Send Messages** and **Attach Files**.", ephemeral=True)
     except discord.HTTPException as error:
@@ -3103,6 +3107,10 @@ if not TOKEN:
     )
 
 
-keep_alive()
+def main():
+    keep_alive()
+    bot.run(TOKEN)
 
-bot.run(TOKEN)
+
+if __name__ == "__main__":
+    main()
