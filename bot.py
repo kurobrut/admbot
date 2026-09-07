@@ -370,6 +370,7 @@ def load_watermark():
             axis=2
         ) < 35
         watermark_pixels[black_background, 3] = 0
+        watermark_pixels[~black_background, 3] = 255
         watermark = Image.fromarray(watermark_pixels, "RGBA")
 
         if watermark.width <= 0 or watermark.height <= 0:
@@ -396,11 +397,6 @@ def apply_watermark(image):
         max(1, int(watermark.height * scale))
     )
     watermark = watermark.resize(watermark_size, Image.Resampling.LANCZOS)
-
-    alpha = watermark.getchannel("A").point(
-        lambda value: value * 105 // 255
-    )
-    watermark.putalpha(alpha)
 
     base = image.convert("RGBA")
     position = (
