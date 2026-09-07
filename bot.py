@@ -479,6 +479,110 @@ def calculate_dark_ratio(
     return dark_pixels / roi.size
 
 
+# =========================================================
+# WATERMARK
+# =========================================================
+
+# By default the bot looks for watermark.png in the same folder as bot.py.
+# You can optionally override this with the WATERMARK_PATH environment variable.
+WATERMARK_PATH = os.getenv(
+    "WATERMARK_PATH",
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "watermark.png"
+    )
+)
+
+
+def apply_proof_watermark(image_data: bytes) -> bytes:
+    """Apply watermark.png to the bottom-right of a processed proof."""
+
+    try:
+        if not os.path.isfile(WATERMARK_PATH):
+            print(
+                f"[PROOF] Watermark not found: {WATERMARK_PATH}. "
+                "Sending proof without watermark."
+            )
+            return image_data
+
+        base = Image.open(
+            io.BytesIO(image_data)
+        ).convert("RGBA")
+
+        watermark = Image.open(
+            WATERMARK_PATH
+        ).convert("RGBA")
+
+        # Remove fully transparent padding around the supplied template.
+        alpha = watermark.getchannel("A")
+        bbox = alpha.getbbox()
+
+        if bbox:
+            watermark = watermark.crop(bbox)
+
+        if watermark.width <= 0 or watermark.height <= 0:
+            print("[PROOF] Watermark image has no visible content.")
+            return image_data
+
+        # Keep the logo readable without allowing it to dominate the proof.
+        max_width = max(
+            120,
+            int(base.width * 0.28)
+        )
+        max_height = max(
+            60,
+            int(base.height * 0.16)
+        )
+
+        watermark.thumbnail(
+            (max_width, max_height),
+            Image.Resampling.LANCZOS
+        )
+
+        margin = max(
+            12,
+            int(base.width * 0.02)
+        )
+
+        x = max(
+            0,
+            base.width - watermark.width - margin
+        )
+
+        y = max(
+            0,
+            base.height - watermark.height - margin
+        )
+
+        # Alpha-composite preserves transparency in watermark.png.
+        base.alpha_composite(
+            watermark,
+            (x, y)
+        )
+
+        output = io.BytesIO()
+        base.convert("RGB").save(
+            output,
+            format="PNG"
+        )
+        output.seek(0)
+
+        print(
+            f"[PROOF] Watermark applied from {WATERMARK_PATH} "
+            f"at bottom-right ({x}, {y}), size="
+            f"{watermark.width}x{watermark.height}."
+        )
+
+        return output.getvalue()
+
+    except Exception as error:
+        print(
+            f"[PROOF] Watermark error: {error}"
+        )
+        traceback.print_exc()
+        return image_data
+
+
 def blur_proof_text(
     image_data: bytes,
     blur_everything: bool = True
@@ -505,7 +609,7 @@ def blur_proof_text(
         width, height = original.size
 
         if width <= 0 or height <= 0:
-            return image_data
+            return apply_proof_watermark(image_data)
 
         rgb = np.array(original)
 
@@ -815,7 +919,7 @@ def blur_proof_text(
                 "returning original image."
             )
 
-            return image_data
+            return apply_proof_watermark(image_data)
 
         # =========================================================
         # 2. FIND USERNAME INSIDE EACH CARD ONLY
@@ -1248,11 +1352,17 @@ def blur_proof_text(
                     )
 
             # -----------------------------------------------------
-            # CHOOSE MOST USERNAME-LIKE LINE
+            # KEEP EVERY USERNAME-LIKE LINE
+            # -----------------------------------------------------
+            #
+            # The previous version selected only one "best" box per
+            # card.  That meant a card containing multiple username-like
+            # regions could leave the others visible.
+            #
+            # Keep every valid merged candidate instead.
             # -----------------------------------------------------
 
-            best = None
-            best_score = -1
+            card_regions = []
 
             for (
                 mx1,
@@ -1278,7 +1388,8 @@ def blur_proof_text(
                     + my1
                 )
 
-                if full_y > y + 58:
+                # Keep the search inside the upper username area.
+                if full_y > y + 62:
                     continue
 
                 check = gray[
@@ -1309,35 +1420,124 @@ def blur_proof_text(
                     )
                 )
 
-                if darkness < 0.02:
+                if darkness < 0.015:
                     continue
 
-                score = (
-                    mw
-                    + darkness * 100
-                    - (my1 * 0.5)
-                )
-
-                if score > best_score:
-
-                    best_score = score
-
-                    best = (
-                        band_left + mx1,
-                        band_top + my1,
-                        band_left + mx2,
+                region = (
+                    max(
+                        0,
+                        band_left + mx1
+                    ),
+                    max(
+                        0,
+                        band_top + my1
+                    ),
+                    min(
+                        width,
+                        band_left + mx2
+                    ),
+                    min(
+                        height,
                         band_top + my2
                     )
+                )
 
-            if best is not None:
+                if (
+                    region[2] <= region[0]
+                    or region[3] <= region[1]
+                ):
+                    continue
+
+                card_regions.append(region)
+
+            # -----------------------------------------------------
+            # Merge any remaining overlapping/nearby regions within
+            # this card.  This prevents duplicate OCR + contour boxes
+            # while still preserving separate usernames.
+            # -----------------------------------------------------
+
+            card_regions.sort(
+                key=lambda r: (
+                    r[1],
+                    r[0]
+                )
+            )
+
+            merged_card_regions = []
+
+            for region in card_regions:
+
+                x1, y1, x2, y2 = region
+                merged_region = False
+
+                for i, old in enumerate(
+                    merged_card_regions
+                ):
+
+                    ox1, oy1, ox2, oy2 = old
+
+                    overlap_x = (
+                        min(x2, ox2)
+                        - max(x1, ox1)
+                    )
+
+                    overlap_y = (
+                        min(y2, oy2)
+                        - max(y1, oy1)
+                    )
+
+                    horizontal_gap = max(
+                        0,
+                        max(
+                            ox1 - x2,
+                            x1 - ox2
+                        )
+                    )
+
+                    vertical_gap = max(
+                        0,
+                        max(
+                            oy1 - y2,
+                            y1 - oy2
+                        )
+                    )
+
+                    same_line = (
+                        horizontal_gap <= 18
+                        and vertical_gap <= 8
+                    )
+
+                    overlaps = (
+                        overlap_x > 0
+                        and overlap_y > 0
+                    )
+
+                    if overlaps or same_line:
+
+                        merged_card_regions[i] = (
+                            min(x1, ox1),
+                            min(y1, oy1),
+                            max(x2, ox2),
+                            max(y2, oy2)
+                        )
+
+                        merged_region = True
+                        break
+
+                if not merged_region:
+                    merged_card_regions.append(
+                        region
+                    )
+
+            for region in merged_card_regions:
 
                 username_regions.append(
-                    best
+                    region
                 )
 
                 print(
                     f"[PROOF] Card {card_index}: "
-                    f"username region {best}"
+                    f"username region {region}"
                 )
 
         print(
@@ -1352,7 +1552,7 @@ def blur_proof_text(
                 "returning original."
             )
 
-            return image_data
+            return apply_proof_watermark(image_data)
 
         # =========================================================
         # 3. BLUR ONLY THE DETECTED USERNAME REGIONS
@@ -1371,13 +1571,13 @@ def blur_proof_text(
             rh = y2 - y1
 
             pad_x = max(
-                5,
-                int(rw * 0.08)
+                7,
+                int(rw * 0.10)
             )
 
             pad_y = max(
-                4,
-                int(rh * 0.35)
+                6,
+                int(rh * 0.50)
             )
 
             bx1 = max(
@@ -1411,7 +1611,7 @@ def blur_proof_text(
 
             crop = crop.filter(
                 ImageFilter.GaussianBlur(
-                    radius=12
+                    radius=13
                 )
             )
 
@@ -1440,7 +1640,10 @@ def blur_proof_text(
             "[PROOF] Updated username-only blur complete."
         )
 
-        return output.getvalue()
+        # IMPORTANT: watermark is applied AFTER all username blurring.
+        return apply_proof_watermark(
+            output.getvalue()
+        )
 
     except Exception as error:
 
@@ -1448,7 +1651,7 @@ def blur_proof_text(
             f"Proof processing error: {error}"
         )
 
-        return image_data
+        return apply_proof_watermark(image_data)
 
 
 # =========================================================
