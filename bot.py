@@ -265,6 +265,7 @@ def styled_embed(
     embed.set_footer(
         text="୨୧ ali's adm house • Customer Shop ♡"
     )
+    embed.timestamp = discord.utils.utcnow()
 
     return embed
 
@@ -1672,7 +1673,7 @@ async def on_member_join(member: discord.Member):
 
     # Keep the embed narrow and stacked so it reads cleanly on both
     # Discord mobile and desktop/Windows without awkward line wrapping.
-    embed = discord.Embed(
+    embed = styled_embed(
         title="🌸 ୨୧ welcome to ali's adm house! ♡",
         description=(
             f"Welcome {member.mention}! We're so happy to have you here! ♡\n\n"
@@ -1713,7 +1714,7 @@ async def on_member_remove(member: discord.Member):
         return
 
     # Compact, stacked layout for consistent rendering on mobile and desktop.
-    embed = discord.Embed(
+    embed = styled_embed(
         title="💔 ୨୧ goodbye, see you soon! ♡",
         description=(
             f"**{member.name}** has left **ali's adm house**... 💔\n\n"
@@ -1800,7 +1801,7 @@ class TicketView(discord.ui.View):
                 reason=f"Ticket opened by {interaction.user}"
             )
 
-            embed = discord.Embed(
+            embed = styled_embed(
                 title="୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
                 description=(f"Welcome {interaction.user.mention}! ♡\n\n"
                              "Thank you for contacting **ali's adm house**!\n\n"
@@ -1936,7 +1937,7 @@ async def setup(interaction: discord.Interaction, panel_channel: discord.TextCha
         config["vouch_channel_id"] = vouch_channel.id
     save_config(config)
 
-    embed = discord.Embed(
+    embed = styled_embed(
         title="୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
         description="Need help with an order?\nWant to ask about one of our houses?\n\nClick **🎫 Open Ticket** below to create a private ticket with our staff! ♡",
         color=PINK
@@ -2118,7 +2119,7 @@ async def ticketpanel(interaction: discord.Interaction, channel: discord.TextCha
     if missing:
         return await safe_send(interaction, "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in that channel.", ephemeral=True)
 
-    embed = discord.Embed(
+    embed = styled_embed(
         title="୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
         description="Need help? ♡\n\nClick **🎫 Open Ticket** below to create a private ticket.",
         color=PINK
@@ -2249,7 +2250,7 @@ async def vouch(interaction: discord.Interaction, message: str):
     if missing:
         return await safe_send(interaction, "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in the vouch channel.", ephemeral=True)
 
-    embed = discord.Embed(
+    embed = styled_embed(
         title="୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡",
         description=f"**{discord.utils.escape_markdown(message)}**\n\n୨୧ **𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳**\n{interaction.user.mention}\n\nThank you so much! ♡",
         color=PINK
@@ -2340,7 +2341,7 @@ async def status(interaction: discord.Interaction, state: app_commands.Choice[st
         "closed": ("⚪・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘤𝘭𝘰𝘴𝘦𝘥", "Our shop is currently **CLOSED**! ♡", GRAY, "⚪-closed")
     }
     title, description, color, channel_name = states.get(state.value, states["closed"])
-    embed = discord.Embed(title=title, description=description, color=color)
+    embed = styled_embed(title, description, color)
     try:
         await channel.send(embed=embed)
         pending_renames[channel.id] = channel_name
@@ -2479,13 +2480,12 @@ class SaySendButton(discord.ui.Button):
 
         roles = [r for r in view.selected_roles if r in interaction.guild.roles and not r.is_default()]
         content = " ".join(role.mention for role in roles) if roles else None
-        embed = discord.Embed(
+        embed = styled_embed(
             title="୨୧・♡ 𝒶𝓃𝓃𝑜𝓊𝓃𝒸𝑒𝓂𝑒𝓃𝓉 ♡・୨୧",
             description="╭・₊˚⊹ **hello everyone!** ⊹˚₊・╮\n\n" + view.message + "\n\n╰・₊˚⊹ ♡ ⊹˚₊・╯",
             color=PINK
         )
         embed.set_footer(text="♡ thank you for being part of our community ♡")
-        embed.timestamp = discord.utils.utcnow()
 
         missing = missing_bot_permissions(view.channel, ("View Channel", "view_channel"), ("Send Messages", "send_messages"), ("Embed Links", "embed_links"), ("Mention Everyone", "mention_everyone")) if roles else missing_bot_permissions(view.channel, ("View Channel", "view_channel"), ("Send Messages", "send_messages"), ("Embed Links", "embed_links"))
         if missing:
@@ -2559,7 +2559,7 @@ async def warn(interaction: discord.Interaction, user: discord.Member, reason: s
 
     dm_sent = True
     try:
-        embed = discord.Embed(title="⚠️ You have been warned", description=f"Reason: **{discord.utils.escape_markdown(reason)}**", color=RED)
+        embed = styled_embed("⚠️ You have been warned", f"Reason: **{discord.utils.escape_markdown(reason)}**", RED)
         embed.set_footer(text="ali's adm house")
         await user.send(embed=embed)
     except discord.Forbidden:
@@ -2985,7 +2985,7 @@ async def vouch_prefix(ctx, *, message: str = None):
     if not isinstance(channel, discord.TextChannel):
         return await ctx.send("❌ Vouch channel isn't configured.")
 
-    embed = discord.Embed(
+    embed = styled_embed(
         title="୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡",
         description=f"**{discord.utils.escape_markdown(message)}**\n\n୨୧ **𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳**\n{ctx.author.mention}\n\nThank you so much! ♡",
         color=PINK
