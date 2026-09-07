@@ -348,10 +348,8 @@ def blur_region(
     )
 
 
-# The URL should point to the raw GitHub file, for example:
-# https://raw.githubusercontent.com/<account>/<repo>/main/watermark.jpg
-WATERMARK_URL = os.getenv("WATERMARK_URL", "").strip()
-WATERMARK_PATH = os.getenv("WATERMARK_PATH", "watermark.[png]").strip()
+# Download the watermark from the repository at runtime.
+WATERMARK_URL = "https://raw.githubusercontent.com/kurobrut/admbot/main/watermark.png"
 _watermark_cache = None
 
 
@@ -363,15 +361,9 @@ def load_watermark():
         return _watermark_cache.copy()
 
     try:
-        if WATERMARK_URL:
-            with urllib.request.urlopen(WATERMARK_URL, timeout=15) as response:
-                watermark_data = response.read()
-            watermark = Image.open(io.BytesIO(watermark_data)).convert("RGB")
-        elif os.path.exists(WATERMARK_PATH):
-            watermark = Image.open(WATERMARK_PATH).convert("RGB")
-        else:
-            print("[PROOF] No watermark configured; using the original image.")
-            return None
+        with urllib.request.urlopen(WATERMARK_URL, timeout=15) as response:
+            watermark_data = response.read()
+        watermark = Image.open(io.BytesIO(watermark_data)).convert("RGB")
 
         if watermark.width <= 0 or watermark.height <= 0:
             return None
@@ -1227,12 +1219,18 @@ def blur_proof_text(
                 )
 
             if not candidates:
-
                 print(
                     f"[PROOF] Card {card_index}: "
-                    f"no username candidate."
+                    "OCR found no username; using the card fallback band."
                 )
-
+                username_regions.append(
+                    (
+                        band_left,
+                        band_top,
+                        band_right,
+                        min(height, y + 38)
+                    )
+                )
                 continue
 
             # -----------------------------------------------------
@@ -1389,16 +1387,23 @@ def blur_proof_text(
                         band_top + my2
                     )
 
-            if best is not None:
-
-                username_regions.append(
-                    best
+            if best is None:
+                best = (
+                    band_left,
+                    band_top,
+                    band_right,
+                    min(height, y + 38)
                 )
-
                 print(
                     f"[PROOF] Card {card_index}: "
-                    f"username region {best}"
+                    "candidate rejected; using the card fallback band."
                 )
+
+            username_regions.append(best)
+            print(
+                f"[PROOF] Card {card_index}: "
+                f"username region {best}"
+            )
 
         print(
             f"[PROOF] Username regions found: "
@@ -1406,13 +1411,7 @@ def blur_proof_text(
         )
 
         if not username_regions:
-
-            print(
-                "[PROOF] No username regions found; "
-                "returning original."
-            )
-
-            return image_data
+            print("[PROOF] No card regions found; watermarking without blur.")
 
         # =========================================================
         # 3. BLUR ONLY THE DETECTED USERNAME REGIONS
