@@ -77,6 +77,10 @@ def environment_int(name, default=None):
         print(f"[CONFIG] Ignoring invalid {name}: {raw!r}")
         return default
 
+# Render and other cloud hosts may use an ephemeral filesystem.  These
+# environment variables are therefore the persistent source of truth for
+# server/channel/role IDs.  Set them once in the hosting dashboard and they
+# survive future code updates/redeploys.
 CONFIG_ENV_KEYS = {
     "panel_channel_id": "PANEL_CHANNEL_ID",
     "ticket_category_id": "TICKET_CATEGORY_ID",
@@ -191,6 +195,7 @@ def apply_environment_config(data):
     return changed
 
 
+# Environment variables win over config.json so settings survive cloud redeploys.
 if apply_environment_config(config):
     save_config(config)
 
@@ -258,8 +263,9 @@ def styled_embed(
     )
 
     embed.set_footer(
-        text="ali's adm house • Customer Shop ♡"
+        text="୨୧ ali's adm house • Customer Shop ♡"
     )
+    embed.timestamp = discord.utils.utcnow()
 
     return embed
 
@@ -276,6 +282,10 @@ def blur_region(
     y2,
     radius=7
 ):
+    """
+    Blur one individual region without creating
+    a giant rectangular blur across the screenshot.
+    """
 
     width, height = image.size
 
@@ -326,6 +336,7 @@ def blur_region(
     )
 
 
+# Keep the watermark beside bot.py so deployment only needs the project files.
 WATERMARK_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "watermark.png"
@@ -334,6 +345,7 @@ _watermark_cache = None
 
 
 def load_watermark():
+    """Load and cache the configured watermark image."""
     global _watermark_cache
 
     if _watermark_cache is not None:
@@ -362,6 +374,7 @@ def load_watermark():
 
 
 def apply_watermark(image):
+    """Place a small centered watermark while preserving its proportions."""
     watermark = load_watermark()
     if watermark is None:
         return image
@@ -385,6 +398,9 @@ def apply_watermark(image):
 
 
 def is_date_or_time(text):
+    """
+    Prevent dates/times from being blurred.
+    """
 
     text_lower = text.lower().strip()
 
@@ -398,29 +414,65 @@ def is_date_or_time(text):
         return True
 
     months = [
-        "jan", "january", "feb", "february", "mar", "march",
-        "apr", "april", "may", "jun", "june", "jul", "july",
-        "aug", "august", "sep", "sept", "september", "oct",
-        "october", "nov", "november", "dec", "december"
+        "jan",
+        "january",
+        "feb",
+        "february",
+        "mar",
+        "march",
+        "apr",
+        "april",
+        "may",
+        "jun",
+        "june",
+        "jul",
+        "july",
+        "aug",
+        "august",
+        "sep",
+        "sept",
+        "september",
+        "oct",
+        "october",
+        "nov",
+        "november",
+        "dec",
+        "december"
     ]
 
     for month in months:
+
         if month in text_lower:
             return True
 
-    if text_lower.replace(",", "").replace(".", "").isdigit():
+    if text_lower.replace(
+        ",",
+        ""
+    ).replace(
+        ".",
+        ""
+    ).isdigit():
+
         return True
 
     return False
 
 
 def is_button_text(text):
+    """
+    Don't blur the large View / Report buttons.
+    """
 
     text_lower = text.lower().strip()
 
     ignored = {
-        "view", "report", "refresh", "buy",
-        "cancel", "confirm", "close"
+        "view",
+        "report",
+        "refresh",
+        "buy",
+        "cancel",
+        "confirm",
+        "close"
     }
 
     return text_lower in ignored
@@ -433,23 +485,47 @@ def calculate_dark_ratio(
     x2,
     y2
 ):
+    """
+    Calculates how much dark text exists inside
+    an OCR region.
+    """
 
     h, w = gray.shape
 
-    x1 = max(0, min(w, int(x1)))
-    y1 = max(0, min(h, int(y1)))
-    x2 = max(0, min(w, int(x2)))
-    y2 = max(0, min(h, int(y2)))
+    x1 = max(
+        0,
+        min(w, int(x1))
+    )
+
+    y1 = max(
+        0,
+        min(h, int(y1))
+    )
+
+    x2 = max(
+        0,
+        min(w, int(x2))
+    )
+
+    y2 = max(
+        0,
+        min(h, int(y2))
+    )
 
     if x2 <= x1 or y2 <= y1:
         return 0
 
-    roi = gray[y1:y2, x1:x2]
+    roi = gray[
+        y1:y2,
+        x1:x2
+    ]
 
     if roi.size == 0:
         return 0
 
-    dark_pixels = np.sum(roi < 145)
+    dark_pixels = np.sum(
+        roi < 145
+    )
 
     return dark_pixels / roi.size
 
@@ -458,12 +534,28 @@ class ProofProcessingError(RuntimeError):
     """Raised when a proof cannot be safely blurred."""
 
 
-def blur_proof_text(image_data: bytes) -> bytes:
+def blur_proof_text(
+    image_data: bytes
+) -> bytes:
+    """
+    Card-aware username blur.
+
+    ONLY the proof-image blur logic is handled here.
+    It detects each visible proof card independently, including
+    partially visible cards at the bottom of a screenshot, then
+    searches only the username band at the top of each card.
+
+    Dates, times, buttons, refresh icons, item icons, and the rest
+    of the screenshot are deliberately outside the target region.
+    """
 
     try:
         print("[PROOF] Starting updated card-by-card username blur...")
 
-        original = Image.open(io.BytesIO(image_data)).convert("RGB")
+        original = Image.open(
+            io.BytesIO(image_data)
+        ).convert("RGB")
+
         width, height = original.size
 
         if width <= 0 or height <= 0:
@@ -472,15 +564,34 @@ def blur_proof_text(image_data: bytes) -> bytes:
             )
 
         rgb = np.array(original)
-        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
 
-        left_limit = min(width, max(250, int(width * 0.68)))
-        light = cv2.inRange(gray, 185, 255)
+        gray = cv2.cvtColor(
+            rgb,
+            cv2.COLOR_RGB2GRAY
+        )
+
+        # =========================================================
+        # 1. DETECT THE LEFT-SIDE PROOF CARDS
+        # =========================================================
+
+        left_limit = min(
+            width,
+            max(250, int(width * 0.68))
+        )
+
+        light = cv2.inRange(
+            gray,
+            185,
+            255
+        )
 
         card_mask = cv2.morphologyEx(
             light,
             cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_RECT, (13, 13)),
+            cv2.getStructuringElement(
+                cv2.MORPH_RECT,
+                (13, 13)
+            ),
             iterations=2
         )
 
@@ -495,93 +606,218 @@ def blur_proof_text(image_data: bytes) -> bytes:
         cards = []
 
         for contour in contours:
-            x, y, w, h = cv2.boundingRect(contour)
 
-            if w < max(160, int(width * 0.30)):
+            x, y, w, h = cv2.boundingRect(
+                contour
+            )
+
+            if w < max(
+                160,
+                int(width * 0.30)
+            ):
                 continue
+
             if h < 45:
                 continue
+
             if w > int(width * 0.68):
                 continue
+
             if w / max(h, 1) < 1.5:
                 continue
 
-            ix1 = max(0, x + 5)
-            iy1 = max(0, y + 5)
-            ix2 = min(width, x + w - 5)
-            iy2 = min(height, y + h - 5)
+            ix1 = max(
+                0,
+                x + 5
+            )
+
+            iy1 = max(
+                0,
+                y + 5
+            )
+
+            ix2 = min(
+                width,
+                x + w - 5
+            )
+
+            iy2 = min(
+                height,
+                y + h - 5
+            )
 
             if ix2 <= ix1 or iy2 <= iy1:
                 continue
 
-            inside = gray[iy1:iy2, ix1:ix2]
+            inside = gray[
+                iy1:iy2,
+                ix1:ix2
+            ]
 
             if inside.size == 0:
                 continue
 
-            if float(np.mean(inside >= 185)) < 0.40:
+            if float(
+                np.mean(inside >= 185)
+            ) < 0.40:
                 continue
 
-            cards.append((x, y, w, h))
+            cards.append(
+                (
+                    x,
+                    y,
+                    w,
+                    h
+                )
+            )
 
-        projection = (light[:, :left_limit] > 0).mean(axis=1)
+        # ---------------------------------------------------------
+        # Row-projection fallback.
+        # ---------------------------------------------------------
+
+        projection = (
+            light[:, :left_limit] > 0
+        ).mean(axis=1)
 
         runs = []
         run_start = None
 
-        for yy, density in enumerate(projection):
+        for yy, density in enumerate(
+            projection
+        ):
+
             active = density >= 0.50
 
             if active and run_start is None:
+
                 run_start = yy
-            elif not active and run_start is not None:
+
+            elif (
+                not active
+                and run_start is not None
+            ):
+
                 if yy - run_start >= 20:
-                    runs.append((run_start, yy))
+
+                    runs.append(
+                        (
+                            run_start,
+                            yy
+                        )
+                    )
+
                 run_start = None
 
-        if run_start is not None and height - run_start >= 20:
-            runs.append((run_start, height))
+        if (
+            run_start is not None
+            and height - run_start >= 20
+        ):
+
+            runs.append(
+                (
+                    run_start,
+                    height
+                )
+            )
 
         for ry1, ry2 in runs:
-            span = gray[ry1:ry2, :left_limit]
+
+            span = gray[
+                ry1:ry2,
+                :left_limit
+            ]
 
             if span.size == 0:
                 continue
 
-            col_density = (span >= 185).mean(axis=0)
-            active_cols = np.where(col_density >= 0.35)[0]
+            col_density = (
+                span >= 185
+            ).mean(axis=0)
+
+            active_cols = np.where(
+                col_density >= 0.35
+            )[0]
 
             if active_cols.size == 0:
                 continue
 
-            x1 = int(active_cols.min())
-            x2 = int(active_cols.max()) + 1
+            x1 = int(
+                active_cols.min()
+            )
+
+            x2 = int(
+                active_cols.max()
+            ) + 1
+
             rw = x2 - x1
 
-            if rw < max(160, int(width * 0.30)):
+            if rw < max(
+                160,
+                int(width * 0.30)
+            ):
                 continue
 
-            cards.append((x1, ry1, rw, max(45, ry2 - ry1)))
+            cards.append(
+                (
+                    x1,
+                    ry1,
+                    rw,
+                    max(
+                        45,
+                        ry2 - ry1
+                    )
+                )
+            )
+
+        # ---------------------------------------------------------
+        # Merge duplicate card detections.
+        # ---------------------------------------------------------
 
         merged_cards = []
 
-        for card in sorted(cards, key=lambda c: (c[1], c[0])):
+        for card in sorted(
+            cards,
+            key=lambda c: (
+                c[1],
+                c[0]
+            )
+        ):
+
             x, y, w, h = card
+
             x2 = x + w
             y2 = y + h
 
             merged = False
 
-            for i, old in enumerate(merged_cards):
+            for i, old in enumerate(
+                merged_cards
+            ):
+
                 ox, oy, ow, oh = old
+
                 ox2 = ox + ow
                 oy2 = oy + oh
 
-                overlap_x = min(x2, ox2) - max(x, ox)
-                overlap_y = min(y2, oy2) - max(y, oy)
+                overlap_x = (
+                    min(x2, ox2)
+                    - max(x, ox)
+                )
+
+                overlap_y = (
+                    min(y2, oy2)
+                    - max(y, oy)
+                )
 
                 same_card = (
-                    overlap_x > max(20, int(min(w, ow) * 0.45))
+                    overlap_x
+                    > max(
+                        20,
+                        int(
+                            min(w, ow)
+                            * 0.45
+                        )
+                    )
                     and overlap_y > 0
                 )
 
@@ -591,60 +827,146 @@ def blur_proof_text(image_data: bytes) -> bytes:
                     and abs(w - ow) <= 25
                 )
 
-                if same_card or close_same_card:
+                if (
+                    same_card
+                    or close_same_card
+                ):
+
                     merged_cards[i] = (
                         min(x, ox),
                         min(y, oy),
-                        max(x2, ox2) - min(x, ox),
-                        max(y2, oy2) - min(y, oy)
+                        max(x2, ox2)
+                        - min(x, ox),
+                        max(y2, oy2)
+                        - min(y, oy)
                     )
+
                     merged = True
+
                     break
 
             if not merged:
-                merged_cards.append(card)
 
-        cards = sorted(merged_cards, key=lambda c: (c[1], c[0]))
+                merged_cards.append(
+                    card
+                )
+
+        cards = sorted(
+            merged_cards,
+            key=lambda c: (
+                c[1],
+                c[0]
+            )
+        )
+
+        print(
+            f"[PROOF] Visible proof cards detected: "
+            f"{len(cards)}"
+        )
 
         if not cards:
+
+            print(
+                "[PROOF] No proof cards detected; "
+                "returning original image."
+            )
+
             raise ProofProcessingError(
                 "No proof cards were detected; refusing to send an unblurred image."
             )
 
+        # =========================================================
+        # 2. FIND USERNAME INSIDE EACH CARD ONLY
+        # =========================================================
+
         username_regions = []
 
-        for card_index, (x, y, w, h) in enumerate(cards, 1):
-            band_top = max(0, y + 5)
-            band_bottom = min(height, y + min(58, max(38, int(h * 0.42))))
-            band_left = max(0, x + 8)
-            band_right = min(width, x + int(w * 0.60))
+        for card_index, (
+            x,
+            y,
+            w,
+            h
+        ) in enumerate(
+            cards,
+            1
+        ):
 
-            if band_right <= band_left or band_bottom <= band_top:
+            band_top = max(
+                0,
+                y + 5
+            )
+
+            band_bottom = min(
+                height,
+                y + min(
+                    58,
+                    max(
+                        38,
+                        int(h * 0.42)
+                    )
+                )
+            )
+
+            band_left = max(
+                0,
+                x + 8
+            )
+
+            band_right = min(
+                width,
+                x + int(w * 0.60)
+            )
+
+            if (
+                band_right <= band_left
+                or band_bottom <= band_top
+            ):
                 continue
 
-            roi = gray[band_top:band_bottom, band_left:band_right]
+            roi = gray[
+                band_top:band_bottom,
+                band_left:band_right
+            ]
 
             if roi.size == 0:
                 continue
 
-            dark = cv2.inRange(roi, 0, 135)
+            # -----------------------------------------------------
+            # DARK TEXT DETECTOR
+            # -----------------------------------------------------
+
+            dark = cv2.inRange(
+                roi,
+                0,
+                135
+            )
+
             dark = cv2.morphologyEx(
                 dark,
                 cv2.MORPH_OPEN,
-                cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)),
+                cv2.getStructuringElement(
+                    cv2.MORPH_RECT,
+                    (2, 2)
+                ),
                 iterations=1
             )
 
             grouped = cv2.dilate(
                 dark,
-                cv2.getStructuringElement(cv2.MORPH_RECT, (5, 2)),
+                cv2.getStructuringElement(
+                    cv2.MORPH_RECT,
+                    (5, 2)
+                ),
                 iterations=1
             )
 
             grouped = cv2.morphologyEx(
                 grouped,
                 cv2.MORPH_CLOSE,
-                cv2.getStructuringElement(cv2.MORPH_RECT, (13, 3)),
+                cv2.getStructuringElement(
+                    cv2.MORPH_RECT,
+                    (13, 3)
+                ),
                 iterations=2
             )
 
@@ -657,161 +979,413 @@ def blur_proof_text(image_data: bytes) -> bytes:
             candidates = []
 
             for contour in contours:
-                cx, cy, cw, ch = cv2.boundingRect(contour)
 
-                if cw < 15 or ch < 6 or ch > 30:
+                cx, cy, cw, ch = cv2.boundingRect(
+                    contour
+                )
+
+                if cw < 15 or ch < 6:
                     continue
+
+                if ch > 30:
+                    continue
+
                 if cw > roi.shape[1] * 0.95:
                     continue
-                if cw / max(ch, 1) < 1.5:
+
+                aspect = cw / max(
+                    ch,
+                    1
+                )
+
+                if aspect < 1.5:
                     continue
 
                 box = roi[
-                    max(0, cy):min(roi.shape[0], cy + ch),
-                    max(0, cx):min(roi.shape[1], cx + cw)
+                    max(0, cy):
+                    min(
+                        roi.shape[0],
+                        cy + ch
+                    ),
+                    max(0, cx):
+                    min(
+                        roi.shape[1],
+                        cx + cw
+                    )
                 ]
 
                 if box.size == 0:
                     continue
 
-                dark_ratio = float(np.mean(box <= 135))
+                dark_ratio = float(
+                    np.mean(
+                        box <= 135
+                    )
+                )
 
                 if dark_ratio < 0.025:
                     continue
 
                 pad = 5
-                sx1 = max(0, cx - pad)
-                sy1 = max(0, cy - pad)
-                sx2 = min(roi.shape[1], cx + cw + pad)
-                sy2 = min(roi.shape[0], cy + ch + pad)
 
-                surrounding = roi[sy1:sy2, sx1:sx2]
+                sx1 = max(
+                    0,
+                    cx - pad
+                )
 
-                if surrounding.size == 0 or float(np.mean(surrounding)) < 135:
+                sy1 = max(
+                    0,
+                    cy - pad
+                )
+
+                sx2 = min(
+                    roi.shape[1],
+                    cx + cw + pad
+                )
+
+                sy2 = min(
+                    roi.shape[0],
+                    cy + ch + pad
+                )
+
+                surrounding = roi[
+                    sy1:sy2,
+                    sx1:sx2
+                ]
+
+                if surrounding.size == 0:
                     continue
 
-                candidates.append((cx, cy, cx + cw, cy + ch, dark_ratio))
+                if float(
+                    np.mean(surrounding)
+                ) < 135:
+                    continue
+
+                candidates.append(
+                    (
+                        cx,
+                        cy,
+                        cx + cw,
+                        cy + ch,
+                        dark_ratio
+                    )
+                )
+
+            # -----------------------------------------------------
+            # OCR FALLBACK
+            # -----------------------------------------------------
 
             try:
-                up = cv2.resize(roi, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+
+                up = cv2.resize(
+                    roi,
+                    None,
+                    fx=3,
+                    fy=3,
+                    interpolation=cv2.INTER_CUBIC
+                )
+
                 ocr_data = pytesseract.image_to_data(
                     up,
                     config="--oem 3 --psm 7",
                     output_type=pytesseract.Output.DICT
                 )
 
-                texts = ocr_data.get("text", [])
-                lefts = ocr_data.get("left", [])
-                tops = ocr_data.get("top", [])
-                widths = ocr_data.get("width", [])
-                heights = ocr_data.get("height", [])
-                confs = ocr_data.get("conf", [])
+                texts = ocr_data.get(
+                    "text",
+                    []
+                )
 
-                for i, text in enumerate(texts):
-                    text = str(text).strip()
+                lefts = ocr_data.get(
+                    "left",
+                    []
+                )
 
-                    if not text or is_date_or_time(text) or is_button_text(text):
+                tops = ocr_data.get(
+                    "top",
+                    []
+                )
+
+                widths = ocr_data.get(
+                    "width",
+                    []
+                )
+
+                heights = ocr_data.get(
+                    "height",
+                    []
+                )
+
+                confs = ocr_data.get(
+                    "conf",
+                    []
+                )
+
+                for i, text in enumerate(
+                    texts
+                ):
+
+                    text = str(
+                        text
+                    ).strip()
+
+                    if not text:
+                        continue
+
+                    if is_date_or_time(
+                        text
+                    ):
+                        continue
+
+                    if is_button_text(
+                        text
+                    ):
                         continue
 
                     try:
-                        conf = float(confs[i])
+
+                        conf = float(
+                            confs[i]
+                        )
+
                     except Exception:
+
                         conf = 0
 
                     if conf < 10:
                         continue
 
-                    ox = int(lefts[i] / 3)
-                    oy = int(tops[i] / 3)
-                    ow = int(widths[i] / 3)
-                    oh = int(heights[i] / 3)
+                    ox = int(
+                        lefts[i] / 3
+                    )
+
+                    oy = int(
+                        tops[i] / 3
+                    )
+
+                    ow = int(
+                        widths[i] / 3
+                    )
+
+                    oh = int(
+                        heights[i] / 3
+                    )
 
                     if ow < 15 or oh < 5:
                         continue
 
-                    ox2 = min(roi.shape[1], ox + ow)
-                    oy2 = min(roi.shape[0], oy + oh)
+                    ox2 = min(
+                        roi.shape[1],
+                        ox + ow
+                    )
 
-                    if ox2 <= ox or oy2 <= oy:
+                    oy2 = min(
+                        roi.shape[0],
+                        oy + oh
+                    )
+
+                    if (
+                        ox2 <= ox
+                        or oy2 <= oy
+                    ):
                         continue
 
-                    ocr_box = roi[oy:oy2, ox:ox2]
+                    ocr_box = roi[
+                        oy:oy2,
+                        ox:ox2
+                    ]
 
                     if ocr_box.size == 0:
                         continue
 
-                    dark_ratio = float(np.mean(ocr_box <= 140))
+                    dark_ratio = float(
+                        np.mean(
+                            ocr_box <= 140
+                        )
+                    )
 
                     if dark_ratio < 0.02:
                         continue
 
-                    candidates.append((ox, oy, ox2, oy2, dark_ratio))
+                    candidates.append(
+                        (
+                            ox,
+                            oy,
+                            ox2,
+                            oy2,
+                            dark_ratio
+                        )
+                    )
 
             except Exception as error:
-                print(f"[PROOF] OCR fallback error on card {card_index}: {error}")
+
+                print(
+                    f"[PROOF] OCR fallback error "
+                    f"on card {card_index}: {error}"
+                )
 
             if not candidates:
+                print(
+                    f"[PROOF] Card {card_index}: "
+                    "OCR found no username; using the card fallback band."
+                )
                 username_regions.append(
-                    (band_left, band_top, band_right, min(height, y + 38))
+                    (
+                        band_left,
+                        band_top,
+                        band_right,
+                        min(height, y + 38)
+                    )
                 )
                 continue
 
-            candidates.sort(key=lambda item: (item[1], item[0]))
+            # -----------------------------------------------------
+            # MERGE NEIGHBOURING PIECES
+            # -----------------------------------------------------
+
+            candidates.sort(
+                key=lambda item: (
+                    item[1],
+                    item[0]
+                )
+            )
+
             merged = []
 
-            for (cx1, cy1, cx2, cy2, score) in candidates:
+            for (
+                cx1,
+                cy1,
+                cx2,
+                cy2,
+                score
+            ) in candidates:
+
                 found = False
 
-                for j, current in enumerate(merged):
-                    mx1, my1, mx2, my2 = current
-                    horizontal_gap = max(0, max(mx1 - cx2, cx1 - mx2))
-                    vertical_gap = max(0, max(my1 - cy2, cy1 - my2))
+                for j, current in enumerate(
+                    merged
+                ):
 
-                    if horizontal_gap <= 16 and vertical_gap <= 9:
+                    mx1, my1, mx2, my2 = current
+
+                    horizontal_gap = max(
+                        0,
+                        max(
+                            mx1 - cx2,
+                            cx1 - mx2
+                        )
+                    )
+
+                    vertical_gap = max(
+                        0,
+                        max(
+                            my1 - cy2,
+                            cy1 - my2
+                        )
+                    )
+
+                    if (
+                        horizontal_gap <= 16
+                        and vertical_gap <= 9
+                    ):
+
                         merged[j] = (
                             min(mx1, cx1),
                             min(my1, cy1),
                             max(mx2, cx2),
                             max(my2, cy2)
                         )
+
                         found = True
+
                         break
 
                 if not found:
-                    merged.append((cx1, cy1, cx2, cy2))
+
+                    merged.append(
+                        (
+                            cx1,
+                            cy1,
+                            cx2,
+                            cy2
+                        )
+                    )
+
+            # -----------------------------------------------------
+            # CHOOSE MOST USERNAME-LIKE LINE
+            # -----------------------------------------------------
 
             best = None
             best_score = -1
 
-            for (mx1, my1, mx2, my2) in merged:
+            for (
+                mx1,
+                my1,
+                mx2,
+                my2
+            ) in merged:
+
                 mw = mx2 - mx1
                 mh = my2 - my1
 
-                if mw < 18 or mh < 5 or mw / max(mh, 1) < 1.5:
+                if mw < 18 or mh < 5:
                     continue
 
-                full_y = band_top + my1
+                if mw / max(
+                    mh,
+                    1
+                ) < 1.5:
+                    continue
+
+                full_y = (
+                    band_top
+                    + my1
+                )
 
                 if full_y > y + 58:
                     continue
 
                 check = gray[
-                    max(0, band_top + my1):min(height, band_top + my2),
-                    max(0, band_left + mx1):min(width, band_left + mx2)
+                    max(
+                        0,
+                        band_top + my1
+                    ):
+                    min(
+                        height,
+                        band_top + my2
+                    ),
+                    max(
+                        0,
+                        band_left + mx1
+                    ):
+                    min(
+                        width,
+                        band_left + mx2
+                    )
                 ]
 
                 if check.size == 0:
                     continue
 
-                darkness = float(np.mean(check <= 140))
+                darkness = float(
+                    np.mean(
+                        check <= 140
+                    )
+                )
 
                 if darkness < 0.02:
                     continue
 
-                score = mw + darkness * 100 - (my1 * 0.5)
+                score = (
+                    mw
+                    + darkness * 100
+                    - (my1 * 0.5)
+                )
 
                 if score > best_score:
+
                     best_score = score
+
                     best = (
                         band_left + mx1,
                         band_top + my1,
@@ -826,42 +1400,124 @@ def blur_proof_text(image_data: bytes) -> bytes:
                     band_right,
                     min(height, y + 38)
                 )
+                print(
+                    f"[PROOF] Card {card_index}: "
+                    "candidate rejected; using the card fallback band."
+                )
 
             username_regions.append(best)
+            print(
+                f"[PROOF] Card {card_index}: "
+                f"username region {best}"
+            )
+
+        print(
+            f"[PROOF] Username regions found: "
+            f"{len(username_regions)}"
+        )
 
         if not username_regions:
             raise ProofProcessingError(
                 "No username regions were detected; refusing to send an unblurred image."
             )
 
+        # =========================================================
+        # 3. BLUR ONLY THE DETECTED USERNAME REGIONS
+        # =========================================================
+
         result = original.copy()
 
-        for (x1, y1, x2, y2) in username_regions:
+        for (
+            x1,
+            y1,
+            x2,
+            y2
+        ) in username_regions:
+
             rw = x2 - x1
             rh = y2 - y1
 
-            pad_x = max(5, int(rw * 0.08))
-            pad_y = max(4, int(rh * 0.35))
+            pad_x = max(
+                5,
+                int(rw * 0.08)
+            )
 
-            bx1 = max(0, x1 - pad_x)
-            by1 = max(0, y1 - pad_y)
-            bx2 = min(width, x2 + pad_x)
-            by2 = min(height, y2 + pad_y)
+            pad_y = max(
+                4,
+                int(rh * 0.35)
+            )
 
-            crop = result.crop((bx1, by1, bx2, by2))
-            crop = crop.filter(ImageFilter.GaussianBlur(radius=12))
-            result.paste(crop, (bx1, by1))
+            bx1 = max(
+                0,
+                x1 - pad_x
+            )
+
+            by1 = max(
+                0,
+                y1 - pad_y
+            )
+
+            bx2 = min(
+                width,
+                x2 + pad_x
+            )
+
+            by2 = min(
+                height,
+                y2 + pad_y
+            )
+
+            crop = result.crop(
+                (
+                    bx1,
+                    by1,
+                    bx2,
+                    by2
+                )
+            )
+
+            crop = crop.filter(
+                ImageFilter.GaussianBlur(
+                    radius=12
+                )
+            )
+
+            result.paste(
+                crop,
+                (
+                    bx1,
+                    by1
+                )
+            )
+
+        # =========================================================
+        # 4. SAVE
+        # =========================================================
 
         result = apply_watermark(result)
 
         output = io.BytesIO()
-        result.save(output, format="PNG", optimize=True)
+
+        result.save(
+            output,
+            format="PNG",
+            optimize=True
+        )
+
         output.seek(0)
+
+        print(
+            "[PROOF] Updated username-only blur complete."
+        )
 
         return output.getvalue()
 
     except Exception as error:
-        print(f"Proof processing error: {error}")
+
+        print(
+            f"Proof processing error: {error}"
+        )
+
         raise ProofProcessingError(
             "Proof processing failed; refusing to send the original image."
         ) from error
@@ -872,6 +1528,7 @@ def blur_proof_text(image_data: bytes) -> bytes:
 # =========================================================
 
 def is_staff(interaction: discord.Interaction):
+    """Return True for administrators or the configured staff role."""
     guild = interaction.guild
     if guild is None or not isinstance(interaction.user, discord.Member):
         return False
@@ -883,10 +1540,12 @@ def is_staff(interaction: discord.Interaction):
     if staff_role_id:
         return any(role.id == staff_role_id for role in interaction.user.roles)
 
+    # If no staff role is configured, fall back to Manage Channels.
     return interaction.user.guild_permissions.manage_channels
 
 
 def missing_bot_permissions(channel, *permissions):
+    """Return human-readable bot permissions missing in a channel."""
     guild = getattr(channel, "guild", None)
     if not guild:
         return list(permissions)
@@ -898,6 +1557,7 @@ def missing_bot_permissions(channel, *permissions):
 
 
 def member_hierarchy_error(interaction: discord.Interaction, target: discord.Member):
+    """Check whether the invoking staff member may moderate target."""
     guild = interaction.guild
     actor = interaction.user
     if guild is None or not isinstance(actor, discord.Member):
@@ -917,12 +1577,15 @@ def member_hierarchy_error(interaction: discord.Interaction, target: discord.Mem
 
 
 async def safe_send(interaction: discord.Interaction, content=None, *, embed=None, ephemeral=False, view=None):
+    """Safely send an interaction response without passing ``view=None`` to discord.py."""
     try:
         kwargs = {
             "content": content,
             "embed": embed,
             "ephemeral": ephemeral,
         }
+        # discord.py expects the view argument to be omitted when there is no view.
+        # Passing view=None can cause ``None.is_finished()`` errors in some versions.
         if view is not None:
             kwargs["view"] = view
 
@@ -942,6 +1605,7 @@ pending_renames = {}
 
 
 async def process_channel_renames():
+    """Process queued channel renames while respecting Discord rate limits."""
     while True:
         try:
             if pending_renames:
@@ -1007,12 +1671,13 @@ async def on_member_join(member: discord.Member):
         print(f"[WELCOME] Configured welcome channel {channel_id} was not found.")
         return
 
-    # Mobile-optimized Embed layout
-    embed = discord.Embed(
-        title="🌸 Welcome to ali's adm house! ♡",
+    # Keep the embed narrow and stacked so it reads cleanly on both
+    # Discord mobile and desktop/Windows without awkward line wrapping.
+    embed = styled_embed(
+        title="🌸 ୨୧ welcome to ali's adm house! ♡",
         description=(
             f"Welcome {member.mention}! We're so happy to have you here! ♡\n\n"
-            "**Getting Started**\n"
+            "✦ **Getting Started**\n"
             "• Check out our products and shop listings.\n"
             "• Open a support ticket for custom orders or questions.\n"
             "• Feel free to chat and enjoy the community! ♡"
@@ -1021,9 +1686,8 @@ async def on_member_join(member: discord.Member):
     )
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="🌸 Customer", value=member.mention, inline=False)
-    embed.add_field(name="⭐ Total Members", value=f"`{member.guild.member_count}`", inline=False)
-    embed.set_footer(text="ali's adm house • Welcome ♡")
-
+    embed.add_field(name="⭐ Members", value=f"`{member.guild.member_count}`", inline=False)
+    embed.set_footer(text="୨୧ ali's adm house • Welcome ♡")
     try:
         await channel.send(
             content=f"👋 Welcome to the server {member.mention}! ♡",
@@ -1049,19 +1713,18 @@ async def on_member_remove(member: discord.Member):
     if not isinstance(channel, discord.TextChannel):
         return
 
-    # Mobile-optimized Embed layout
-    embed = discord.Embed(
-        title="💔 Goodbye, see you soon! ♡",
+    # Compact, stacked layout for consistent rendering on mobile and desktop.
+    embed = styled_embed(
+        title="💔 ୨୧ goodbye, see you soon! ♡",
         description=(
-            f"**{member.name}** has left **ali's adm house**...\n\n"
+            f"**{member.name}** has left **ali's adm house**... 💔\n\n"
             "We're sad to see you leave, but we hope to see you back again soon! ♡"
         ),
         color=GRAY
     )
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="👋 Member", value=f"`{member.name}`", inline=False)
-    embed.set_footer(text="ali's adm house • Goodbye ♡")
-
+    embed.set_footer(text="୨୧ ali's adm house • Goodbye ♡")
     try:
         await channel.send(embed=embed)
     except discord.Forbidden:
@@ -1094,6 +1757,7 @@ class TicketView(discord.ui.View):
         if not isinstance(category, discord.CategoryChannel):
             return await safe_send(interaction, "❌ The ticket category hasn't been configured yet.", ephemeral=True)
 
+        # Reuse an existing ticket if one exists.
         topic = f"ali_adm_ticket:{interaction.user.id}"
         existing = discord.utils.find(lambda c: isinstance(c, discord.TextChannel) and c.topic == topic, guild.text_channels)
         if existing:
@@ -1137,21 +1801,15 @@ class TicketView(discord.ui.View):
                 reason=f"Ticket opened by {interaction.user}"
             )
 
-            # Mobile-optimized Embed layout
-            embed = discord.Embed(
-                title="🎫 Support Tickets ♡",
-                description=(
-                    f"Welcome {interaction.user.mention}! ♡\n\n"
-                    "Thank you for contacting **ali's adm house**!\n"
-                    "Please specify the details below:\n\n"
-                    "• **House:**\n"
-                    "• **Build Type:**\n\n"
-                    "A staff member will be with you shortly. ♡"
-                ),
+            embed = styled_embed(
+                title="୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
+                description=(f"Welcome {interaction.user.mention}! ♡\n\n"
+                             "Thank you for contacting **ali's adm house**!\n\n"
+                             "Please tell us what you need help with.\n\n"
+                             "୨୧ **House:**\n୨୧ **Build type:**\n\n"
+                             "A staff member will be with you shortly. ♡"),
                 color=PINK
             )
-            embed.set_footer(text="ali's adm house • Support ♡")
-
             await ticket_channel.send(
                 content=interaction.user.mention,
                 embed=embed,
@@ -1227,8 +1885,8 @@ class CloseTicketView(discord.ui.View):
             print(f"[TICKET VOUCH CHECK] HTTP error: {error}")
             return await safe_send(interaction, "❌ I couldn't verify your vouch right now. Please try again.", ephemeral=True)
 
-        bot_commands_channel = discord.utils.get(guild.text_channels, name="₊˚♡-bot-commands")
-        commands_mention = bot_commands_channel.mention if bot_commands_channel else "`#bot-commands`"
+        bot_commands_channel = discord.utils.get(guild.text_channels, name="₊˚⊹♡-𝓫𝓸𝓽-𝓬𝓸𝓶𝓶𝓪𝓷𝓭𝓼")
+        commands_mention = bot_commands_channel.mention if bot_commands_channel else "`#₊˚⊹♡-𝓫𝓸𝓽-𝓬𝓸𝓶𝓶𝓪𝓷𝓭𝓼`"
         if not has_vouched:
             return await safe_send(interaction, f"Did you vouch yet? ♡\n\nPlease use `/vouch` in {commands_mention} before closing your ticket!", ephemeral=True)
 
@@ -1279,17 +1937,11 @@ async def setup(interaction: discord.Interaction, panel_channel: discord.TextCha
         config["vouch_channel_id"] = vouch_channel.id
     save_config(config)
 
-    # Mobile-optimized Embed layout
-    embed = discord.Embed(
-        title="🎫 Support Tickets ♡",
-        description=(
-            "Need help with an order or house builds?\n\n"
-            "Click **🎫 Open Ticket** below to open a private ticket with staff! ♡"
-        ),
+    embed = styled_embed(
+        title="୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
+        description="Need help with an order?\nWant to ask about one of our houses?\n\nClick **🎫 Open Ticket** below to create a private ticket with our staff! ♡",
         color=PINK
     )
-    embed.set_footer(text="ali's adm house • Support ♡")
-
     try:
         await panel_channel.send(embed=embed, view=TicketView())
         await interaction.response.send_message("♡ Ticket system configured successfully!", ephemeral=True)
@@ -1308,15 +1960,20 @@ async def setup(interaction: discord.Interaction, panel_channel: discord.TextCha
     name="setupstatus",
     description="Configure the shop status channel."
 )
-@app_commands.default_permissions(administrator=True)
+@app_commands.default_permissions(
+    administrator=True
+)
 async def setupstatus(
     interaction: discord.Interaction,
     status_channel: discord.TextChannel
 ):
 
     if not interaction.user.guild_permissions.administrator:
+
         return await interaction.response.send_message(
+
             "❌ You need **Administrator** permission.",
+
             ephemeral=True
         )
 
@@ -1332,11 +1989,17 @@ async def setupstatus(
             ephemeral=True
         )
 
-    config["status_channel_id"] = status_channel.id
+    config[
+        "status_channel_id"
+    ] = status_channel.id
+
     save_config(config)
 
     await interaction.response.send_message(
-        f"♡ Status channel set to {status_channel.mention}.",
+
+        f"♡ Status channel set to "
+        f"{status_channel.mention}.",
+
         ephemeral=True
     )
 
@@ -1349,7 +2012,9 @@ async def setupstatus(
     name="setupjoins",
     description="Configure welcome/goodbye messages."
 )
-@app_commands.default_permissions(administrator=True)
+@app_commands.default_permissions(
+    administrator=True
+)
 async def setupjoins(
     interaction: discord.Interaction,
     welcome_goodbye_channel: discord.TextChannel,
@@ -1357,12 +2022,17 @@ async def setupjoins(
 ):
 
     if not interaction.user.guild_permissions.administrator:
+
         return await interaction.response.send_message(
+
             "❌ You need **Administrator** permission.",
+
             ephemeral=True
         )
 
-    config["welcome_goodbye_channel_id"] = welcome_goodbye_channel.id
+    config[
+        "welcome_goodbye_channel_id"
+    ] = welcome_goodbye_channel.id
 
     if customer_role:
         me = interaction.guild.me
@@ -1371,12 +2041,16 @@ async def setupjoins(
                 "❌ I cannot automatically give that customer role because it is managed or too high for my role.",
                 ephemeral=True
             )
-        config["customer_role_id"] = customer_role.id
+        config[
+            "customer_role_id"
+        ] = customer_role.id
 
     save_config(config)
 
     await interaction.response.send_message(
+
         "♡ Welcome/goodbye system configured!",
+
         ephemeral=True
     )
 
@@ -1389,15 +2063,20 @@ async def setupjoins(
     name="setupproof",
     description="Configure the proof submission channel."
 )
-@app_commands.default_permissions(administrator=True)
+@app_commands.default_permissions(
+    administrator=True
+)
 async def setupproof(
     interaction: discord.Interaction,
     proof_channel: discord.TextChannel
 ):
 
     if not interaction.user.guild_permissions.administrator:
+
         return await interaction.response.send_message(
+
             "❌ You need **Administrator** permission.",
+
             ephemeral=True
         )
 
@@ -1413,12 +2092,17 @@ async def setupproof(
             ephemeral=True
         )
 
-    config["proof_channel_id"] = proof_channel.id
+    config[
+        "proof_channel_id"
+    ] = proof_channel.id
+
     save_config(config)
 
     await interaction.response.send_message(
+
         "♡ Proof channel configured successfully!\n\n"
         f"📸 Proof Channel: {proof_channel.mention}",
+
         ephemeral=True
     )
 
@@ -1435,14 +2119,11 @@ async def ticketpanel(interaction: discord.Interaction, channel: discord.TextCha
     if missing:
         return await safe_send(interaction, "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in that channel.", ephemeral=True)
 
-    # Mobile-optimized Embed layout
-    embed = discord.Embed(
-        title="🎫 Support Tickets ♡",
-        description="Need help? ♡\n\nClick **🎫 Open Ticket** below to open a private ticket.",
+    embed = styled_embed(
+        title="୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
+        description="Need help? ♡\n\nClick **🎫 Open Ticket** below to create a private ticket.",
         color=PINK
     )
-    embed.set_footer(text="ali's adm house • Support ♡")
-
     try:
         await channel.send(embed=embed, view=TicketView())
         await safe_send(interaction, f"♡ Ticket panel sent to {channel.mention}.", ephemeral=True)
@@ -1461,10 +2142,19 @@ async def ticketpanel(interaction: discord.Interaction, channel: discord.TextCha
     name="ping",
     description="Check the bot latency."
 )
-async def ping(interaction: discord.Interaction):
-    latency = round(bot.latency * 1000)
+async def ping(
+    interaction: discord.Interaction
+):
+
+    latency = round(
+        bot.latency * 1000
+    )
+
     await interaction.response.send_message(
-        f"♡ Pong!\n🌸 Latency: **{latency}ms**",
+
+        f"♡ Pong!\n"
+        f"🌸 Latency: **{latency}ms**",
+
         ephemeral=True
     )
 
@@ -1504,6 +2194,7 @@ async def proof(interaction: discord.Interaction, image: discord.Attachment):
     await interaction.response.defer(ephemeral=True)
     try:
         image_data = await image.read()
+        # Validate that Discord actually delivered a readable image before OCR/PIL work.
         with Image.open(io.BytesIO(image_data)) as check:
             check.verify()
 
@@ -1559,18 +2250,12 @@ async def vouch(interaction: discord.Interaction, message: str):
     if missing:
         return await safe_send(interaction, "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in the vouch channel.", ephemeral=True)
 
-    # Mobile-optimized Embed layout
-    embed = discord.Embed(
-        title="⭐ New Customer Vouch ♡",
-        description=(
-            f"**\"{discord.utils.escape_markdown(message)}\"**\n\n"
-            f"**Customer:** {interaction.user.mention}\n"
-            "Thank you so much! ♡"
-        ),
+    embed = styled_embed(
+        title="୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡",
+        description=f"**{discord.utils.escape_markdown(message)}**\n\n୨୧ **𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳**\n{interaction.user.mention}\n\nThank you so much! ♡",
         color=PINK
     )
-    embed.set_author(name="ali's adm house ♡")
-    embed.set_footer(text="ali's adm house • Vouches ♡")
+    embed.set_author(name="୨୧ 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦 ♡")
 
     try:
         await channel.send(
@@ -1609,7 +2294,7 @@ async def vouchcount(interaction: discord.Interaction):
     try:
         async for msg in channel.history(limit=5000):
             if msg.author == bot.user and any(
-                embed.title == "⭐ New Customer Vouch ♡" for embed in msg.embeds
+                embed.title == "୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡" for embed in msg.embeds
             ):
                 count += 1
         await interaction.followup.send(f"♡ **ali's adm house** has **{count}** vouch(es)! ⭐", ephemeral=True)
@@ -1650,17 +2335,13 @@ async def status(interaction: discord.Interaction, state: app_commands.Choice[st
     if missing:
         return await safe_send(interaction, "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in the status channel.", ephemeral=True)
 
-    # Mobile-optimized Embed titles and standard text formatting
     states = {
-        "available": ("🟢 Orders are Available", "Our shop is currently **OPEN** for new orders! ♡", GREEN, "🟢-available"),
-        "busy": ("🔴 Orders are Busy", "Our shop is currently **BUSY**! ♡\nOrders may take a little longer.", RED, "🔴-busy"),
-        "closed": ("⚪ Orders are Closed", "Our shop is currently **CLOSED**! ♡", GRAY, "⚪-closed")
+        "available": ("🟢・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘢𝘷𝘢𝘪𝘭𝘢𝘣𝘭𝘦", "Our shop is currently **OPEN** for new orders! ♡", GREEN, "🟢-available"),
+        "busy": ("🔴・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘣𝘶𝘴𝘺", "Our shop is currently **BUSY**! ♡\nOrders may take a little longer.", RED, "🔴-busy"),
+        "closed": ("⚪・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘤𝘭𝘰𝘴𝘦𝘥", "Our shop is currently **CLOSED**! ♡", GRAY, "⚪-closed")
     }
     title, description, color, channel_name = states.get(state.value, states["closed"])
-    
-    embed = discord.Embed(title=title, description=description, color=color)
-    embed.set_footer(text="ali's adm house • Status ♡")
-
+    embed = styled_embed(title, description, color)
     try:
         await channel.send(embed=embed)
         pending_renames[channel.id] = channel_name
@@ -1686,6 +2367,7 @@ class SayRoleSelect(discord.ui.Select):
         options = []
 
         for role in roles[:25]:
+
             options.append(
                 discord.SelectOption(
                     label=role.name[:100],
@@ -1701,16 +2383,30 @@ class SayRoleSelect(discord.ui.Select):
             options=options
         )
 
-    async def callback(self, interaction: discord.Interaction):
-        role_ids = {role.id for role in self.roles}
+    async def callback(
+        self,
+        interaction: discord.Interaction
+    ):
+
+        # Remove roles belonging to this dropdown
+        role_ids = {
+            role.id
+            for role in self.roles
+        }
 
         self.selected_roles[:] = [
-            role for role in self.selected_roles
+            role
+            for role in self.selected_roles
             if role.id not in role_ids
         ]
 
+        # Add newly selected roles
         for value in self.values:
-            role = interaction.guild.get_role(int(value))
+
+            role = interaction.guild.get_role(
+                int(value)
+            )
+
             if role:
                 self.selected_roles.append(role)
 
@@ -1719,31 +2415,53 @@ class SayRoleSelect(discord.ui.Select):
 
 class SayRoleView(discord.ui.View):
 
-    def __init__(self, interaction, channel, message):
+    def __init__(
+        self,
+        interaction,
+        channel,
+        message
+    ):
+
         super().__init__(timeout=120)
 
         self.original_user = interaction.user
         self.channel = channel
         self.message = message
+
         self.selected_roles = []
 
         guild = interaction.guild
         me = guild.me
 
+        # Only roles the bot can actually mention/manage
         roles = [
-            role for role in guild.roles
+            role
+            for role in guild.roles
             if not role.is_default()
             and (not me or role < me.top_role)
         ]
 
+        # Discord allows a maximum of 25 options
+        # per select menu.
         for i in range(0, len(roles), 25):
-            chunk = roles[i:i + 25]
-            self.add_item(SayRoleSelect(chunk, self.selected_roles))
 
+            chunk = roles[i:i + 25]
+
+            self.add_item(
+                SayRoleSelect(
+                    chunk,
+                    self.selected_roles
+                )
+            )
+
+            # Discord views support max 5 action rows.
             if len(self.children) >= 5:
                 break
 
-        self.add_item(SaySendButton(self))
+        # Send button
+        self.add_item(
+            SaySendButton(self)
+        )
 
 
 class SaySendButton(discord.ui.Button):
@@ -1762,15 +2480,12 @@ class SaySendButton(discord.ui.Button):
 
         roles = [r for r in view.selected_roles if r in interaction.guild.roles and not r.is_default()]
         content = " ".join(role.mention for role in roles) if roles else None
-
-        # Mobile-optimized Embed layout
-        embed = discord.Embed(
-            title="📢 Announcement ♡",
-            description=f"**Hello Everyone!** ♡\n\n{view.message}",
+        embed = styled_embed(
+            title="୨୧・♡ 𝒶𝓃𝓃𝑜𝓊𝓃𝒸𝑒𝓂𝑒𝓃𝓉 ♡・୨୧",
+            description="╭・₊˚⊹ **hello everyone!** ⊹˚₊・╮\n\n" + view.message + "\n\n╰・₊˚⊹ ♡ ⊹˚₊・╯",
             color=PINK
         )
-        embed.set_footer(text="ali's adm house • Thank you for being part of our community ♡")
-        embed.timestamp = discord.utils.utcnow()
+        embed.set_footer(text="♡ thank you for being part of our community ♡")
 
         missing = missing_bot_permissions(view.channel, ("View Channel", "view_channel"), ("Send Messages", "send_messages"), ("Embed Links", "embed_links"), ("Mention Everyone", "mention_everyone")) if roles else missing_bot_permissions(view.channel, ("View Channel", "view_channel"), ("Send Messages", "send_messages"), ("Embed Links", "embed_links"))
         if missing:
@@ -1811,14 +2526,14 @@ async def say(interaction: discord.Interaction, channel: discord.TextChannel, me
 
     me = guild.me
     manageable_roles = [role for role in guild.roles if not role.is_default() and (me is None or role < me.top_role)]
-
+    # Five component rows means at most four dropdowns plus the send button.
     if len(manageable_roles) > 100:
         return await safe_send(interaction, "❌ There are too many manageable roles for this announcement menu. Please reduce the number of roles or mention roles manually.", ephemeral=True)
 
     try:
         view = SayRoleView(interaction, channel, message)
         await interaction.response.send_message(
-            "♡ **Choose the role(s) to mention** ♡\n\nYou can select multiple roles, then press **Send Announcement ♡**.",
+            "୨୧・♡ **Choose the role(s) to mention** ♡・୨୧\n\nYou can select multiple roles, then press **Send Announcement ♡**.",
             view=view,
             ephemeral=True
         )
@@ -1844,13 +2559,8 @@ async def warn(interaction: discord.Interaction, user: discord.Member, reason: s
 
     dm_sent = True
     try:
-        # Mobile-optimized Embed layout
-        embed = discord.Embed(
-            title="⚠️ Warning Received",
-            description=f"You have been issued a warning in **{interaction.guild.name}**.\n\n**Reason:** {discord.utils.escape_markdown(reason)}",
-            color=RED
-        )
-        embed.set_footer(text="ali's adm house • Moderation ♡")
+        embed = styled_embed("⚠️ You have been warned", f"Reason: **{discord.utils.escape_markdown(reason)}**", RED)
+        embed.set_footer(text="ali's adm house")
         await user.send(embed=embed)
     except discord.Forbidden:
         dm_sent = False
@@ -1972,7 +2682,9 @@ async def giverole(interaction: discord.Interaction, user: discord.Member, role:
 # MUTE / UNMUTE
 # =========================================================
 
+
 def parse_timeout_duration(value: str):
+    """Parse durations such as 10m, 1h, 2d, or 1w."""
     import re
 
     value = value.strip().lower()
@@ -1991,6 +2703,7 @@ def parse_timeout_duration(value: str):
     }
     seconds = amount * multipliers[unit]
 
+    # Discord timeouts have a maximum of 28 days.
     if seconds < 1 or seconds > 28 * 24 * 60 * 60:
         return None
 
@@ -2170,6 +2883,7 @@ async def kick(interaction: discord.Interaction, user: discord.Member, reason: s
     if me is None or not me.guild_permissions.kick_members:
         return await safe_send(interaction, "❌ I need **Kick Members** permission.", ephemeral=True)
     try:
+        # Try to notify the user before removing them from the server.
         dm_sent = True
         try:
             await user.send(
@@ -2271,19 +2985,12 @@ async def vouch_prefix(ctx, *, message: str = None):
     if not isinstance(channel, discord.TextChannel):
         return await ctx.send("❌ Vouch channel isn't configured.")
 
-    # Mobile-optimized Embed layout
-    embed = discord.Embed(
-        title="⭐ New Customer Vouch ♡",
-        description=(
-            f"**\"{discord.utils.escape_markdown(message)}\"**\n\n"
-            f"**Customer:** {ctx.author.mention}\n"
-            "Thank you so much! ♡"
-        ),
+    embed = styled_embed(
+        title="୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡",
+        description=f"**{discord.utils.escape_markdown(message)}**\n\n୨୧ **𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳**\n{ctx.author.mention}\n\nThank you so much! ♡",
         color=PINK
     )
-    embed.set_author(name="ali's adm house ♡")
-    embed.set_footer(text="ali's adm house • Vouches ♡")
-
+    embed.set_author(name="୨୧ 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦 ♡")
     try:
         await channel.send(content=ctx.author.mention, embed=embed, allowed_mentions=discord.AllowedMentions(users=[ctx.author]))
         try:
@@ -2387,10 +3094,15 @@ async def on_ready():
 # START BOT
 # =========================================================
 
-TOKEN = os.getenv("DISCORD_TOKEN")
+TOKEN = os.getenv(
+    "DISCORD_TOKEN"
+)
 
 if not TOKEN:
-    raise RuntimeError("DISCORD_TOKEN is not set.")
+
+    raise RuntimeError(
+        "DISCORD_TOKEN is not set."
+    )
 
 
 def main():
