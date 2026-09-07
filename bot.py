@@ -250,6 +250,9 @@ GRAY = discord.Color.from_rgb(
 # EMBED HELPER
 # =========================================================
 
+COQUETTE_DIVIDER = "♡ ───────────── ♡"
+
+
 def styled_embed(
     title,
     description,
@@ -258,12 +261,15 @@ def styled_embed(
 
     embed = discord.Embed(
         title=title,
-        description=description,
+        description=f"{COQUETTE_DIVIDER}\n{description}\n{COQUETTE_DIVIDER}",
         color=color
     )
 
+    embed.set_author(
+        name="🎀 Ali's ADM House"
+    )
     embed.set_footer(
-        text="Ali's ADM House | Customer Shop"
+        text="♡ Made with love | Ali's ADM House ♡"
     )
     embed.timestamp = discord.utils.utcnow()
 
@@ -1687,7 +1693,7 @@ async def on_member_join(member: discord.Member):
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="🌸 Customer", value=member.mention, inline=False)
     embed.add_field(name="⭐ Members", value=f"`{member.guild.member_count}`", inline=False)
-    embed.set_footer(text="Ali's ADM House | Welcome")
+    embed.set_footer(text="♡ Made with love | Welcome ♡")
     try:
         await channel.send(
             content=f"👋 Welcome to the server {member.mention}! ♡",
@@ -1724,7 +1730,7 @@ async def on_member_remove(member: discord.Member):
     )
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="👋 Member", value=f"`{member.name}`", inline=False)
-    embed.set_footer(text="Ali's ADM House | Goodbye")
+    embed.set_footer(text="♡ Made with love | Goodbye ♡")
     try:
         await channel.send(embed=embed)
     except discord.Forbidden:
@@ -1939,7 +1945,7 @@ async def setup(interaction: discord.Interaction, panel_channel: discord.TextCha
 
     embed = styled_embed(
         title="🎫 Support Tickets",
-        description="Need help with an order?\nWant to ask about one of our houses?\n\nClick **🎫 Open Ticket** below to create a private ticket with our staff.",
+        description="Need help with an order?\nWant to ask about one of our houses?\n\nClick **🎫 Open Ticket** below to create a private ticket with our staff! ♡",
         color=PINK
     )
     try:
@@ -2121,7 +2127,7 @@ async def ticketpanel(interaction: discord.Interaction, channel: discord.TextCha
 
     embed = styled_embed(
         title="🎫 Support Tickets",
-        description="Need help?\n\nClick **🎫 Open Ticket** below to create a private ticket.",
+        description="Need help? ♡\n\nClick **🎫 Open Ticket** below to create a private ticket.",
         color=PINK
     )
     try:
@@ -2255,7 +2261,7 @@ async def vouch(interaction: discord.Interaction, message: str):
         description=f"**{discord.utils.escape_markdown(message)}**\n\n**Customer**\n{interaction.user.mention}\n\nThank you so much!",
         color=PINK
     )
-    embed.set_author(name="Ali's ADM House")
+    embed.set_author(name="🎀 Ali's ADM House")
 
     try:
         await channel.send(
@@ -2485,7 +2491,7 @@ class SaySendButton(discord.ui.Button):
             description="**Hello everyone!**\n\n" + view.message,
             color=PINK
         )
-        embed.set_footer(text="Thank you for being part of our community")
+        embed.set_footer(text="♡ Thank you for being part of our community ♡")
 
         missing = missing_bot_permissions(view.channel, ("View Channel", "view_channel"), ("Send Messages", "send_messages"), ("Embed Links", "embed_links"), ("Mention Everyone", "mention_everyone")) if roles else missing_bot_permissions(view.channel, ("View Channel", "view_channel"), ("Send Messages", "send_messages"), ("Embed Links", "embed_links"))
         if missing:
@@ -2560,7 +2566,7 @@ async def warn(interaction: discord.Interaction, user: discord.Member, reason: s
     dm_sent = True
     try:
         embed = styled_embed("⚠️ You have been warned", f"Reason: **{discord.utils.escape_markdown(reason)}**", RED)
-        embed.set_footer(text="ali's adm house")
+        embed.set_footer(text="♡ Made with love | Ali's ADM House ♡")
         await user.send(embed=embed)
     except discord.Forbidden:
         dm_sent = False
@@ -2990,7 +2996,7 @@ async def vouch_prefix(ctx, *, message: str = None):
         description=f"**{discord.utils.escape_markdown(message)}**\n\n**Customer**\n{ctx.author.mention}\n\nThank you so much!",
         color=PINK
     )
-    embed.set_author(name="Ali's ADM House")
+    embed.set_author(name="🎀 Ali's ADM House")
     try:
         await channel.send(content=ctx.author.mention, embed=embed, allowed_mentions=discord.AllowedMentions(users=[ctx.author]))
         try:
