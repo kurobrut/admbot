@@ -493,9 +493,60 @@ WATERMARK_PATH = os.getenv(
     )
 )
 
+# Pink privacy-blur settings. These are intentionally configurable so the
+# blur can match pastel/pink proof screenshots like the example you provided.
+BLUR_TINT = (255, 150, 215)
+BLUR_TINT_ALPHA = 105
+BLUR_RADIUS = 13
+
+
+def apply_pink_blur(
+    image,
+    x1,
+    y1,
+    x2,
+    y2,
+    radius=BLUR_RADIUS
+):
+    """Blur a detected username and add a soft pink privacy tint."""
+
+    width, height = image.size
+
+    x1 = max(0, min(width, int(x1)))
+    y1 = max(0, min(height, int(y1)))
+    x2 = max(0, min(width, int(x2)))
+    y2 = max(0, min(height, int(y2)))
+
+    if x2 <= x1 or y2 <= y1:
+        return
+
+    crop = image.crop((x1, y1, x2, y2)).convert("RGBA")
+
+    # Blur the original content first so the username is not readable.
+    blurred = crop.filter(
+        ImageFilter.GaussianBlur(radius=radius)
+    )
+
+    # Add the pastel pink tint used by the proof UI.
+    tint = Image.new(
+        "RGBA",
+        blurred.size,
+        BLUR_TINT + (BLUR_TINT_ALPHA,)
+    )
+
+    blurred = Image.alpha_composite(
+        blurred,
+        tint
+    )
+
+    image.paste(
+        blurred.convert("RGB"),
+        (x1, y1)
+    )
+
 
 def apply_proof_watermark(image_data: bytes) -> bytes:
-    """Apply watermark.png to the bottom-right of a processed proof."""
+    """Apply watermark.png to the CENTER of a processed proof."""
 
     try:
         if not os.path.isfile(WATERMARK_PATH):
@@ -513,7 +564,7 @@ def apply_proof_watermark(image_data: bytes) -> bytes:
             WATERMARK_PATH
         ).convert("RGBA")
 
-        # Remove fully transparent padding around the supplied template.
+        # Remove transparent padding around the supplied 500x500 template.
         alpha = watermark.getchannel("A")
         bbox = alpha.getbbox()
 
@@ -524,37 +575,27 @@ def apply_proof_watermark(image_data: bytes) -> bytes:
             print("[PROOF] Watermark image has no visible content.")
             return image_data
 
-        # Keep the logo readable without allowing it to dominate the proof.
-        max_width = max(
-            120,
-            int(base.width * 0.28)
-        )
-        max_height = max(
-            60,
-            int(base.height * 0.16)
-        )
+        # Center watermark. The logo is kept large enough to be visible but
+        # not so large that it completely hides the proof.
+        max_width = max(180, int(base.width * 0.46))
+        max_height = max(90, int(base.height * 0.28))
 
         watermark.thumbnail(
             (max_width, max_height),
             Image.Resampling.LANCZOS
         )
 
-        margin = max(
-            12,
-            int(base.width * 0.02)
-        )
-
         x = max(
             0,
-            base.width - watermark.width - margin
+            (base.width - watermark.width) // 2
         )
 
         y = max(
             0,
-            base.height - watermark.height - margin
+            (base.height - watermark.height) // 2
         )
 
-        # Alpha-composite preserves transparency in watermark.png.
+        # Keep the original transparency and logo colors.
         base.alpha_composite(
             watermark,
             (x, y)
@@ -568,9 +609,8 @@ def apply_proof_watermark(image_data: bytes) -> bytes:
         output.seek(0)
 
         print(
-            f"[PROOF] Watermark applied from {WATERMARK_PATH} "
-            f"at bottom-right ({x}, {y}), size="
-            f"{watermark.width}x{watermark.height}."
+            f"[PROOF] Center watermark applied from {WATERMARK_PATH} "
+            f"at ({x}, {y}), size={watermark.width}x{watermark.height}."
         )
 
         return output.getvalue()
@@ -1555,7 +1595,7 @@ def blur_proof_text(
             return apply_proof_watermark(image_data)
 
         # =========================================================
-        # 3. BLUR ONLY THE DETECTED USERNAME REGIONS
+        # 3. BLUR EVERY DETECTED USERNAME REGION WITH PASTEL PINK TINT
         # =========================================================
 
         result = original.copy()
@@ -1600,27 +1640,13 @@ def blur_proof_text(
                 y2 + pad_y
             )
 
-            crop = result.crop(
-                (
-                    bx1,
-                    by1,
-                    bx2,
-                    by2
-                )
-            )
-
-            crop = crop.filter(
-                ImageFilter.GaussianBlur(
-                    radius=13
-                )
-            )
-
-            result.paste(
-                crop,
-                (
-                    bx1,
-                    by1
-                )
+            apply_pink_blur(
+                result,
+                bx1,
+                by1,
+                bx2,
+                by2,
+                radius=BLUR_RADIUS
             )
 
         # =========================================================
