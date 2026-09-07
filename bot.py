@@ -263,7 +263,7 @@ def styled_embed(
     )
 
     embed.set_footer(
-        text="୨୧ ali's adm house • Customer Shop ♡"
+        text="Ali's ADM House | Customer Shop"
     )
     embed.timestamp = discord.utils.utcnow()
 
@@ -1674,20 +1674,20 @@ async def on_member_join(member: discord.Member):
     # Keep the embed narrow and stacked so it reads cleanly on both
     # Discord mobile and desktop/Windows without awkward line wrapping.
     embed = styled_embed(
-        title="🌸 ୨୧ welcome to ali's adm house! ♡",
+        title="🌸 Welcome to Ali's ADM House",
         description=(
-            f"Welcome {member.mention}! We're so happy to have you here! ♡\n\n"
+            f"Welcome {member.mention}! We're so happy to have you here!\n\n"
             "✦ **Getting Started**\n"
             "• Check out our products and shop listings.\n"
             "• Open a support ticket for custom orders or questions.\n"
-            "• Feel free to chat and enjoy the community! ♡"
+            "• Feel free to chat and enjoy the community!"
         ),
         color=PINK
     )
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="🌸 Customer", value=member.mention, inline=False)
     embed.add_field(name="⭐ Members", value=f"`{member.guild.member_count}`", inline=False)
-    embed.set_footer(text="୨୧ ali's adm house • Welcome ♡")
+    embed.set_footer(text="Ali's ADM House | Welcome")
     try:
         await channel.send(
             content=f"👋 Welcome to the server {member.mention}! ♡",
@@ -1715,16 +1715,16 @@ async def on_member_remove(member: discord.Member):
 
     # Compact, stacked layout for consistent rendering on mobile and desktop.
     embed = styled_embed(
-        title="💔 ୨୧ goodbye, see you soon! ♡",
+        title="💔 Goodbye, See You Soon!",
         description=(
-            f"**{member.name}** has left **ali's adm house**... 💔\n\n"
-            "We're sad to see you leave, but we hope to see you back again soon! ♡"
+            f"**{member.name}** has left **Ali's ADM House**.\n\n"
+            "We're sad to see you leave, but we hope to see you back again soon!"
         ),
         color=GRAY
     )
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="👋 Member", value=f"`{member.name}`", inline=False)
-    embed.set_footer(text="୨୧ ali's adm house • Goodbye ♡")
+    embed.set_footer(text="Ali's ADM House | Goodbye")
     try:
         await channel.send(embed=embed)
     except discord.Forbidden:
@@ -1802,12 +1802,12 @@ class TicketView(discord.ui.View):
             )
 
             embed = styled_embed(
-                title="୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
-                description=(f"Welcome {interaction.user.mention}! ♡\n\n"
+                title="🎫 Support Tickets",
+                description=(f"Welcome {interaction.user.mention}!\n\n"
                              "Thank you for contacting **ali's adm house**!\n\n"
                              "Please tell us what you need help with.\n\n"
-                             "୨୧ **House:**\n୨୧ **Build type:**\n\n"
-                             "A staff member will be with you shortly. ♡"),
+                             "**House:**\n**Build type:**\n\n"
+                             "A staff member will be with you shortly."),
                 color=PINK
             )
             await ticket_channel.send(
@@ -1938,8 +1938,8 @@ async def setup(interaction: discord.Interaction, panel_channel: discord.TextCha
     save_config(config)
 
     embed = styled_embed(
-        title="୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
-        description="Need help with an order?\nWant to ask about one of our houses?\n\nClick **🎫 Open Ticket** below to create a private ticket with our staff! ♡",
+        title="🎫 Support Tickets",
+        description="Need help with an order?\nWant to ask about one of our houses?\n\nClick **🎫 Open Ticket** below to create a private ticket with our staff.",
         color=PINK
     )
     try:
@@ -2120,8 +2120,8 @@ async def ticketpanel(interaction: discord.Interaction, channel: discord.TextCha
         return await safe_send(interaction, "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in that channel.", ephemeral=True)
 
     embed = styled_embed(
-        title="୨୧・𝘴𝘶𝘱𝘱𝘰𝘳𝘵 𝘵𝘪𝘤𝘬𝘦𝘵𝘴 ♡",
-        description="Need help? ♡\n\nClick **🎫 Open Ticket** below to create a private ticket.",
+        title="🎫 Support Tickets",
+        description="Need help?\n\nClick **🎫 Open Ticket** below to create a private ticket.",
         color=PINK
     )
     try:
@@ -2251,11 +2251,11 @@ async def vouch(interaction: discord.Interaction, message: str):
         return await safe_send(interaction, "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in the vouch channel.", ephemeral=True)
 
     embed = styled_embed(
-        title="୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡",
-        description=f"**{discord.utils.escape_markdown(message)}**\n\n୨୧ **𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳**\n{interaction.user.mention}\n\nThank you so much! ♡",
+        title="📝 New Customer Vouch",
+        description=f"**{discord.utils.escape_markdown(message)}**\n\n**Customer**\n{interaction.user.mention}\n\nThank you so much!",
         color=PINK
     )
-    embed.set_author(name="୨୧ 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦 ♡")
+    embed.set_author(name="Ali's ADM House")
 
     try:
         await channel.send(
@@ -2294,7 +2294,7 @@ async def vouchcount(interaction: discord.Interaction):
     try:
         async for msg in channel.history(limit=5000):
             if msg.author == bot.user and any(
-                embed.title == "୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡" for embed in msg.embeds
+                embed.title == "📝 New Customer Vouch" for embed in msg.embeds
             ):
                 count += 1
         await interaction.followup.send(f"♡ **ali's adm house** has **{count}** vouch(es)! ⭐", ephemeral=True)
@@ -2336,9 +2336,9 @@ async def status(interaction: discord.Interaction, state: app_commands.Choice[st
         return await safe_send(interaction, "❌ I am missing " + ", ".join(f"**{x}**" for x in missing) + " in the status channel.", ephemeral=True)
 
     states = {
-        "available": ("🟢・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘢𝘷𝘢𝘪𝘭𝘢𝘣𝘭𝘦", "Our shop is currently **OPEN** for new orders! ♡", GREEN, "🟢-available"),
-        "busy": ("🔴・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘣𝘶𝘴𝘺", "Our shop is currently **BUSY**! ♡\nOrders may take a little longer.", RED, "🔴-busy"),
-        "closed": ("⚪・𝘰𝘳𝘥𝘦𝘳𝘴 𝘢𝘳𝘦 𝘤𝘭𝘰𝘴𝘦𝘥", "Our shop is currently **CLOSED**! ♡", GRAY, "⚪-closed")
+        "available": ("🟢 Orders Available", "Our shop is currently **OPEN** for new orders.", GREEN, "🟢-available"),
+        "busy": ("🔴 Orders Are Busy", "Our shop is currently **BUSY**.\nOrders may take a little longer.", RED, "🔴-busy"),
+        "closed": ("⚪ Orders Closed", "Our shop is currently **CLOSED**.", GRAY, "⚪-closed")
     }
     title, description, color, channel_name = states.get(state.value, states["closed"])
     embed = styled_embed(title, description, color)
@@ -2481,11 +2481,11 @@ class SaySendButton(discord.ui.Button):
         roles = [r for r in view.selected_roles if r in interaction.guild.roles and not r.is_default()]
         content = " ".join(role.mention for role in roles) if roles else None
         embed = styled_embed(
-            title="୨୧・♡ 𝒶𝓃𝓃𝑜𝓊𝓃𝒸𝑒𝓂𝑒𝓃𝓉 ♡・୨୧",
-            description="╭・₊˚⊹ **hello everyone!** ⊹˚₊・╮\n\n" + view.message + "\n\n╰・₊˚⊹ ♡ ⊹˚₊・╯",
+            title="📢 Announcement",
+            description="**Hello everyone!**\n\n" + view.message,
             color=PINK
         )
-        embed.set_footer(text="♡ thank you for being part of our community ♡")
+        embed.set_footer(text="Thank you for being part of our community")
 
         missing = missing_bot_permissions(view.channel, ("View Channel", "view_channel"), ("Send Messages", "send_messages"), ("Embed Links", "embed_links"), ("Mention Everyone", "mention_everyone")) if roles else missing_bot_permissions(view.channel, ("View Channel", "view_channel"), ("Send Messages", "send_messages"), ("Embed Links", "embed_links"))
         if missing:
@@ -2986,11 +2986,11 @@ async def vouch_prefix(ctx, *, message: str = None):
         return await ctx.send("❌ Vouch channel isn't configured.")
 
     embed = styled_embed(
-        title="୨୧・𝘯𝘦𝘸 𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳 𝘷𝘰𝘶𝘤𝘩 ♡",
-        description=f"**{discord.utils.escape_markdown(message)}**\n\n୨୧ **𝘤𝘶𝘴𝘵𝘰𝘮𝘦𝘳**\n{ctx.author.mention}\n\nThank you so much! ♡",
+        title="📝 New Customer Vouch",
+        description=f"**{discord.utils.escape_markdown(message)}**\n\n**Customer**\n{ctx.author.mention}\n\nThank you so much!",
         color=PINK
     )
-    embed.set_author(name="୨୧ 𝘢𝘭𝘪'𝘴 𝘢𝘥𝘮 𝘩𝘰𝘶𝘴𝘦 ♡")
+    embed.set_author(name="Ali's ADM House")
     try:
         await channel.send(content=ctx.author.mention, embed=embed, allowed_mentions=discord.AllowedMentions(users=[ctx.author]))
         try:
