@@ -363,7 +363,15 @@ def load_watermark():
     try:
         with urllib.request.urlopen(WATERMARK_URL, timeout=15) as response:
             watermark_data = response.read()
-        watermark = Image.open(io.BytesIO(watermark_data)).convert("RGB")
+            watermark = Image.open(io.BytesIO(watermark_data)).convert("RGBA")
+
+            watermark_pixels = np.array(watermark)
+            black_background = np.max(
+                watermark_pixels[:, :, :3],
+                axis=2
+            ) < 35
+            watermark_pixels[black_background, 3] = 0
+            watermark = Image.fromarray(watermark_pixels, "RGBA")
 
         if watermark.width <= 0 or watermark.height <= 0:
             return None
@@ -392,7 +400,10 @@ def apply_watermark(image):
     left = max(0, (watermark.width - width) // 2)
     top = max(0, (watermark.height - height) // 2)
     watermark = watermark.crop((left, top, left + width, top + height))
-    watermark.putalpha(105)
+    alpha = watermark.getchannel("A").point(
+        lambda value: value * 105 // 255
+    )
+    watermark.putalpha(alpha)
 
     base = image.convert("RGBA")
     return Image.alpha_composite(base, watermark)
