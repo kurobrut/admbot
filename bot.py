@@ -3,6 +3,8 @@ import json
 import io
 import asyncio
 import traceback
+import urllib.error
+import urllib.request
 from datetime import timedelta
 from threading import Thread
 
@@ -344,6 +346,64 @@ def blur_region(
             y1
         )
     )
+
+
+# The URL should point to the raw GitHub file, for example:
+# https://raw.githubusercontent.com/<account>/<repo>/main/watermark.jpg
+WATERMARK_URL = os.getenv("WATERMARK_URL", "").strip()
+WATERMARK_PATH = os.getenv("WATERMARK_PATH", "watermark.[png]").strip()
+_watermark_cache = None
+
+
+def load_watermark():
+    """Load and cache the configured watermark image."""
+    global _watermark_cache
+
+    if _watermark_cache is not None:
+        return _watermark_cache.copy()
+
+    try:
+        if WATERMARK_URL:
+            with urllib.request.urlopen(WATERMARK_URL, timeout=15) as response:
+                watermark_data = response.read()
+            watermark = Image.open(io.BytesIO(watermark_data)).convert("RGB")
+        elif os.path.exists(WATERMARK_PATH):
+            watermark = Image.open(WATERMARK_PATH).convert("RGB")
+        else:
+            print("[PROOF] No watermark configured; using the original image.")
+            return None
+
+        if watermark.width <= 0 or watermark.height <= 0:
+            return None
+
+        _watermark_cache = watermark.copy()
+        return watermark
+    except (OSError, ValueError, urllib.error.URLError) as error:
+        print(f"[PROOF] Could not load watermark: {error}")
+        return None
+
+
+def apply_watermark(image):
+    """Cover the complete proof image while preserving watermark proportions."""
+    watermark = load_watermark()
+    if watermark is None:
+        return image
+
+    width, height = image.size
+    scale = max(width / watermark.width, height / watermark.height)
+    watermark_size = (
+        max(1, int(watermark.width * scale)),
+        max(1, int(watermark.height * scale))
+    )
+    watermark = watermark.resize(watermark_size, Image.Resampling.LANCZOS)
+
+    left = max(0, (watermark.width - width) // 2)
+    top = max(0, (watermark.height - height) // 2)
+    watermark = watermark.crop((left, top, left + width, top + height))
+    watermark.putalpha(105)
+
+    base = image.convert("RGBA")
+    return Image.alpha_composite(base, watermark)
 
 
 def is_date_or_time(text):
@@ -1427,11 +1487,14 @@ def blur_proof_text(
         # 4. SAVE
         # =========================================================
 
+        result = apply_watermark(result)
+
         output = io.BytesIO()
 
         result.save(
             output,
-            format="PNG"
+            format="PNG",
+            optimize=True
         )
 
         output.seek(0)
