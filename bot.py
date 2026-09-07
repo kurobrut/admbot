@@ -509,13 +509,12 @@ def apply_pink_blur(
     radius=BLUR_RADIUS
 ):
     """
-    Apply a soft pastel-pink privacy blur with feathered edges.
+    Apply a soft pink privacy blur.
 
-    The center is fully blurred so the username cannot be read, while
-    the outer edge fades smoothly into the original screenshot instead
-    of producing a hard rectangular patch.
+    The blur is deliberately broad enough to make the text unreadable,
+    while the mask is feathered so it looks like a soft privacy haze
+    instead of a hard rectangular block.
     """
-
     width, height = image.size
 
     x1 = max(0, min(width, int(x1)))
@@ -526,64 +525,105 @@ def apply_pink_blur(
     if x2 <= x1 or y2 <= y1:
         return
 
-    # Extra area gives the blur room to feather into the surrounding UI.
-    feather = max(8, int(radius * 1.5))
+    # Extra room allows the Gaussian blur to spread naturally.
+    feather = max(7, int(radius * 1.4))
     ex1 = max(0, x1 - feather)
     ey1 = max(0, y1 - feather)
     ex2 = min(width, x2 + feather)
     ey2 = min(height, y2 + feather)
 
-    original_crop = image.crop((ex1, ey1, ex2, ey2)).convert("RGBA")
-    blurred = original_crop.filter(ImageFilter.GaussianBlur(radius=radius))
+    base_crop = image.crop((ex1, ey1, ex2, ey2)).convert("RGBA")
 
-    tint = Image.new(
+    # Strong blur so black text and colored text cannot remain readable.
+    blurred = base_crop.filter(
+        ImageFilter.GaussianBlur(
+            radius=max(8, int(radius))
+        )
+    )
+
+    # Pink-tinted blurred layer.
+    pink_layer = Image.new(
         "RGBA",
         blurred.size,
-        BLUR_TINT + (BLUR_TINT_ALPHA,)
+        BLUR_TINT + (170,)
     )
-    processed = Image.alpha_composite(blurred, tint)
 
-    # Soft alpha mask. The central username area is opaque; the edge
-    # gradually fades out so there is no obvious rectangle.
-    mask = Image.new("L", processed.size, 0)
-    mask_draw = ImageDraw.Draw(mask)
+    processed = Image.alpha_composite(
+        blurred,
+        pink_layer
+    )
+
+    # Soft capsule/rounded privacy area.
+    mask = Image.new(
+        "L",
+        processed.size,
+        0
+    )
+
+    draw = ImageDraw.Draw(mask)
 
     ix1 = x1 - ex1
     iy1 = y1 - ey1
     ix2 = x2 - ex1
     iy2 = y2 - ey1
 
-    mask_draw.rounded_rectangle(
+    box_h = max(1, iy2 - iy1)
+
+    draw.rounded_rectangle(
         (ix1, iy1, ix2, iy2),
-        radius=max(5, int(radius * 0.7)),
+        radius=max(8, box_h // 2),
         fill=255
-    )
-    mask = mask.filter(
-        ImageFilter.GaussianBlur(radius=max(4, int(radius * 0.65)))
     )
 
-    # Make the inner part completely opaque to guarantee the username
-    # itself is not left readable after blending.
-    inner = Image.new("L", processed.size, 0)
+    # Feather the outside edge.
+    mask = mask.filter(
+        ImageFilter.GaussianBlur(
+            radius=max(4, int(radius * 0.55))
+        )
+    )
+
+    # Keep the center of the username area fully opaque.
+    inner = Image.new(
+        "L",
+        processed.size,
+        0
+    )
+
     inner_draw = ImageDraw.Draw(inner)
+
     inner_draw.rounded_rectangle(
-        (ix1 + 2, iy1 + 2, ix2 - 2, iy2 - 2),
-        radius=max(3, int(radius * 0.45)),
+        (
+            ix1 + 2,
+            iy1 + 2,
+            ix2 - 2,
+            iy2 - 2
+        ),
+        radius=max(7, (box_h // 2) - 2),
         fill=255
     )
+
+    # Composite a solid center into the feathered mask. This prevents
+    # dark/pink letters from remaining readable in the middle.
     mask = Image.composite(
-        Image.new("L", processed.size, 255),
+        Image.new(
+            "L",
+            processed.size,
+            255
+        ),
         mask,
         inner
     )
 
     blended = Image.composite(
         processed,
-        original_crop,
+        base_crop,
         mask
     )
 
-    image.paste(blended.convert("RGB"), (ex1, ey1))
+    image.paste(
+        blended.convert("RGB"),
+        (ex1, ey1)
+    )
 
 
 def apply_proof_watermark(image_data: bytes) -> bytes:
@@ -618,8 +658,8 @@ def apply_proof_watermark(image_data: bytes) -> bytes:
 
         # Center watermark. The logo is kept large enough to be visible but
         # not so large that it completely hides the proof.
-        max_width = max(100, int(base.width * 0.22))
-        max_height = max(50, int(base.height * 0.14))
+        max_width = max(80, int(base.width * 0.16))
+        max_height = max(40, int(base.height * 0.10))
 
         watermark.thumbnail(
             (max_width, max_height),
@@ -668,369 +708,812 @@ def blur_proof_text(
     image_data: bytes,
     blur_everything: bool = True
 ) -> bytes:
-    """Blur every username, supporting both black/dark and pink text."""
-    try:
-        print("[PROOF] Starting black + pink username detection...")
+    """
+    Robust proof privacy processor.
 
-        original = Image.open(io.BytesIO(image_data)).convert("RGB")
+    Every proof-card row is inspected independently. The detector finds the
+    FIRST actual text line inside the card (the username line), then covers
+    ALL text pieces on that line. It supports black/dark usernames and
+    pink/pastel-pink usernames.
+
+    A card-wide username fallback is used only when the text detector cannot
+    find a line, so an OCR/color failure cannot leave a username exposed.
+    """
+    try:
+        print("[PROOF] Starting robust username protection...")
+
+        original = Image.open(
+            io.BytesIO(image_data)
+        ).convert("RGB")
+
         width, height = original.size
+
         if width <= 0 or height <= 0:
             return apply_proof_watermark(image_data)
 
         rgb = np.array(original)
-        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-
-        # The proof cards in the supplied layout occupy the left portion.
-        left_limit = min(width, max(260, int(width * 0.66)))
-        panel = rgb[:, :left_limit]
-        panel_gray = gray[:, :left_limit]
-
-        # ---------------------------------------------------------
-        # Find card rows. We use bright/white card backgrounds only
-        # for locating rows; username detection is color-independent.
-        # ---------------------------------------------------------
-        light = cv2.inRange(panel_gray, 175, 255)
-        light = cv2.morphologyEx(
-            light,
-            cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_RECT, (17, 17)),
-            iterations=2
+        gray = cv2.cvtColor(
+            rgb,
+            cv2.COLOR_RGB2GRAY
         )
 
-        contours, _ = cv2.findContours(
-            light,
-            cv2.RETR_EXTERNAL,
-            cv2.CHAIN_APPROX_SIMPLE
+        # =========================================================
+        # 1. FIND CARD ROWS
+        # =========================================================
+
+        # Proof cards are on the left side.
+        left_limit = min(
+            width,
+            max(
+                260,
+                int(width * 0.72)
+            )
         )
 
-        cards = []
-        for c in contours:
-            x, y, w, h = cv2.boundingRect(c)
-            if w >= max(180, int(width * 0.38)) and h >= 65 and w <= int(width * 0.72):
-                if w / max(h, 1) >= 1.45:
-                    cards.append((x, y, w, h))
+        left_gray = gray[:, :left_limit]
 
-        # Horizontal projection fallback catches partially visible cards.
-        projection = (light > 0).mean(axis=1)
-        runs = []
-        start_run = None
-        for yy, density in enumerate(projection):
+        # Only use this mask to find the horizontal card rows.
+        light = cv2.inRange(
+            left_gray,
+            190,
+            255
+        )
+
+        row_density = (
+            light > 0
+        ).mean(axis=1)
+
+        row_runs = []
+        run_start = None
+
+        for yy, density in enumerate(
+            row_density
+        ):
+
             active = density >= 0.50
-            if active and start_run is None:
-                start_run = yy
-            elif not active and start_run is not None:
-                if yy - start_run >= 55:
-                    runs.append((start_run, yy))
-                start_run = None
-        if start_run is not None and height - start_run >= 55:
-            runs.append((start_run, height))
 
-        for y1, y2 in runs:
-            cards.append((0, y1, left_limit, y2 - y1))
+            if active and run_start is None:
+                run_start = yy
 
-        # Merge duplicate card detections while preserving separate rows.
-        cards.sort(key=lambda c: (c[1], c[0]))
-        merged_cards = []
-        for card in cards:
-            x, y, w, h = card
-            x2, y2 = x + w, y + h
-            merged = False
-            for i, old in enumerate(merged_cards):
-                ox, oy, ow, oh = old
-                ox2, oy2 = ox + ow, oy + oh
-                overlap_x = min(x2, ox2) - max(x, ox)
-                overlap_y = min(y2, oy2) - max(y, oy)
-                if overlap_x > 100 and overlap_y > 20:
-                    merged_cards[i] = (
-                        min(x, ox), min(y, oy),
-                        max(x2, ox2) - min(x, ox),
-                        max(y2, oy2) - min(y, oy)
-                    )
-                    merged = True
-                    break
-            if not merged:
-                merged_cards.append(card)
+            elif (
+                not active
+                and run_start is not None
+            ):
 
-        cards = sorted(merged_cards, key=lambda c: c[1])
-        print(f"[PROOF] Card rows detected: {len(cards)}")
-
-        # ---------------------------------------------------------
-        # Color masks for BOTH black/dark and pink usernames.
-        # ---------------------------------------------------------
-        hsv = cv2.cvtColor(panel, cv2.COLOR_RGB2HSV)
-        h = hsv[:, :, 0]
-        sat = hsv[:, :, 1]
-        val = hsv[:, :, 2]
-        r = panel[:, :, 0].astype(np.int16)
-        g = panel[:, :, 1].astype(np.int16)
-        b = panel[:, :, 2].astype(np.int16)
-
-        # Broad pink/magenta mask. This intentionally accepts lighter
-        # pastel pinks that the previous threshold could miss.
-        pink = (
-            (
-                (((h <= 179) & (h >= 145)) | ((h >= 0) & (h <= 12)))
-                & (sat >= 18)
-                & (val >= 135)
-                & (r >= g + 8)
-                & (r >= b - 25)
-            )
-            | (
-                (r >= 185)
-                & (r >= g + 12)
-                & (r >= b - 35)
-                & (sat >= 15)
-            )
-        ).astype(np.uint8) * 255
-
-        # Black/dark mask. Include dark gray and near-black text.
-        dark = (
-            (val <= 155)
-            & (sat <= 95)
-        ).astype(np.uint8) * 255
-
-        def make_text_mask(mask):
-            mask = cv2.morphologyEx(
-                mask,
-                cv2.MORPH_OPEN,
-                cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)),
-                iterations=1
-            )
-            # Connect letters into words without connecting rows far apart.
-            mask = cv2.dilate(
-                mask,
-                cv2.getStructuringElement(cv2.MORPH_RECT, (4, 2)),
-                iterations=1
-            )
-            mask = cv2.morphologyEx(
-                mask,
-                cv2.MORPH_CLOSE,
-                cv2.getStructuringElement(cv2.MORPH_RECT, (11, 3)),
-                iterations=2
-            )
-            return mask
-
-        pink_grouped = make_text_mask(pink)
-        dark_grouped = make_text_mask(dark)
-
-        def contour_candidates(mask, kind):
-            out = []
-            cs, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for c in cs:
-                x, y, w, hh = cv2.boundingRect(c)
-                if w < 20 or hh < 5 or hh > 32:
-                    continue
-                if w > int(left_limit * 0.60):
-                    continue
-                if w / max(hh, 1) < 1.4:
-                    continue
-                # Usernames normally begin in the left side of the card.
-                if x > int(left_limit * 0.38):
-                    continue
-                box = mask[y:min(height, y + hh), x:min(left_limit, x + w)]
-                if box.size == 0:
-                    continue
-                coverage = float(np.mean(box > 0))
-                if coverage < 0.035:
-                    continue
-                out.append((x, y, x + w, y + hh, kind))
-            return out
-
-        candidates = contour_candidates(pink_grouped, "pink")
-        candidates += contour_candidates(dark_grouped, "dark")
-
-        # ---------------------------------------------------------
-        # OCR fallback, run on several variants so either color can
-        # be recognized even if the contour detector misses it.
-        # ---------------------------------------------------------
-        try:
-            variants = [
-                ("gray", panel_gray),
-                ("pink-contrast", cv2.cvtColor(pink_grouped, cv2.COLOR_GRAY2BGR)),
-                ("dark-contrast", cv2.cvtColor(dark_grouped, cv2.COLOR_GRAY2BGR)),
-            ]
-
-            for variant_name, variant in variants:
-                up = cv2.resize(
-                    variant,
-                    None,
-                    fx=4,
-                    fy=4,
-                    interpolation=cv2.INTER_CUBIC
-                )
-                for psm in (6, 11, 12):
-                    try:
-                        data = pytesseract.image_to_data(
-                            up,
-                            config=f"--oem 3 --psm {psm}",
-                            output_type=pytesseract.Output.DICT
+                if yy - run_start >= 35:
+                    row_runs.append(
+                        (
+                            run_start,
+                            yy
                         )
-                    except Exception:
-                        continue
+                    )
 
-                    for i, text in enumerate(data.get("text", [])):
-                        text = str(text).strip()
-                        if not text or is_date_or_time(text) or is_button_text(text):
-                            continue
-                        try:
-                            conf = float(data["conf"][i])
-                        except Exception:
-                            conf = 0
-                        if conf < 5:
-                            continue
+                run_start = None
 
-                        x = int(data["left"][i] / 4)
-                        y = int(data["top"][i] / 4)
-                        w = int(data["width"][i] / 4)
-                        hh = int(data["height"][i] / 4)
+        if (
+            run_start is not None
+            and height - run_start >= 35
+        ):
+            row_runs.append(
+                (
+                    run_start,
+                    height
+                )
+            )
 
-                        if w < 18 or hh < 5 or hh > 32:
-                            continue
-                        if x > int(left_limit * 0.40):
-                            continue
+        # Fallback contour detection if the projection finds nothing.
+        if not row_runs:
 
-                        # Only accept OCR boxes that actually contain
-                        # either pink or dark text pixels.
-                        sx1, sy1 = max(0, x), max(0, y)
-                        sx2, sy2 = min(left_limit, x + w), min(height, y + hh)
-                        if sx2 <= sx1 or sy2 <= sy1:
-                            continue
+            contour_mask = cv2.morphologyEx(
+                light,
+                cv2.MORPH_CLOSE,
+                cv2.getStructuringElement(
+                    cv2.MORPH_RECT,
+                    (9, 5)
+                ),
+                iterations=1
+            )
 
-                        pm = float(np.mean(pink[sy1:sy2, sx1:sx2] > 0))
-                        dm = float(np.mean(dark[sy1:sy2, sx1:sx2] > 0))
-                        if pm < 0.015 and dm < 0.015:
-                            continue
+            contours, _ = cv2.findContours(
+                contour_mask,
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE
+            )
 
-                        candidates.append((x, y, x + w, y + hh, "ocr"))
-        except Exception as error:
-            print(f"[PROOF] OCR fallback error: {error}")
+            for contour in contours:
 
-        # ---------------------------------------------------------
-        # Process EACH card separately. This is the important part:
-        # for each card we select the TOP text line, but keep ALL
-        # horizontal pieces on that line. Therefore a card can never
-        # lose a second username candidate just because another one
-        # scored higher.
-        # ---------------------------------------------------------
-        username_regions = []
+                x, y, w, h = cv2.boundingRect(
+                    contour
+                )
 
-        for card_index, (cx, cy, cw, ch) in enumerate(cards, 1):
-            card_right = min(left_limit, cx + cw)
-            # Username line is near the top of each card.
-            top_limit = min(height, cy + max(48, int(ch * 0.34)))
+                if (
+                    w >= int(width * 0.35)
+                    and h >= 40
+                ):
+                    row_runs.append(
+                        (
+                            y,
+                            min(
+                                height,
+                                y + h
+                            )
+                        )
+                    )
 
-            card_candidates = []
-            for x1, y1, x2, y2, kind in candidates:
-                if x1 >= card_right or x2 <= cx:
-                    continue
-                if y1 < cy - 12 or y1 > top_limit:
-                    continue
+        # Only merge actual overlapping runs.
+        row_runs.sort(
+            key=lambda r: r[0]
+        )
 
-                # Require meaningful horizontal overlap with this card.
-                overlap = min(x2, card_right) - max(x1, cx)
-                if overlap < min(20, max(1, x2 - x1) * 0.30):
-                    continue
+        clean_runs = []
 
-                card_candidates.append((x1, y1, x2, y2, kind))
+        for y1, y2 in row_runs:
 
-            if not card_candidates:
-                print(f"[PROOF] Card {card_index}: no candidates")
+            if not clean_runs:
+                clean_runs.append(
+                    [y1, y2]
+                )
                 continue
 
-            # Find the uppermost text baseline/cluster. This separates the
-            # username from the date line underneath it.
-            top_y = min(c[1] for c in card_candidates)
-            username_line = [
-                c for c in card_candidates
-                if c[1] <= top_y + 12
+            py1, py2 = clean_runs[-1]
+
+            if y1 <= py2:
+                clean_runs[-1][1] = max(
+                    py2,
+                    y2
+                )
+            else:
+                clean_runs.append(
+                    [y1, y2]
+                )
+
+        cards = [
+            (
+                0,
+                y1,
+                left_limit,
+                y2 - y1
+            )
+            for y1, y2 in clean_runs
+            if y2 - y1 >= 35
+        ]
+
+        print(
+            f"[PROOF] Card rows detected: {len(cards)}"
+        )
+
+        # =========================================================
+        # 2. BLACK + PINK TEXT MASK
+        # =========================================================
+
+        hsv = cv2.cvtColor(
+            rgb,
+            cv2.COLOR_RGB2HSV
+        )
+
+        hue = hsv[:, :, 0]
+        saturation = hsv[:, :, 1]
+        value = hsv[:, :, 2]
+
+        r = rgb[:, :, 0].astype(np.int16)
+        g = rgb[:, :, 1].astype(np.int16)
+        b = rgb[:, :, 2].astype(np.int16)
+
+        # Dark/black/gray text.
+        dark = (
+            (value <= 180)
+            & (saturation <= 150)
+        ).astype(
+            np.uint8
+        ) * 255
+
+        # Pink/magenta/pastel-pink text.
+        pink = (
+            (
+                (
+                    (
+                        (hue >= 130)
+                        & (hue <= 179)
+                    )
+                    |
+                    (
+                        (hue >= 0)
+                        & (hue <= 20)
+                    )
+                )
+                & (saturation >= 25)
+                & (value >= 95)
+                & (r >= g + 40)
+            )
+            |
+            (
+                (r >= 190)
+                & (r >= g + 40)
+                & (r >= b - 30)
+                & (value >= 95)
+            )
+        ).astype(
+            np.uint8
+        ) * 255
+
+        text_mask = cv2.bitwise_or(
+            dark,
+            pink
+        )
+
+        text_mask = cv2.morphologyEx(
+            text_mask,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(
+                cv2.MORPH_RECT,
+                (2, 2)
+            )
+        )
+
+        # Connect characters into words.
+        text_mask = cv2.dilate(
+            text_mask,
+            cv2.getStructuringElement(
+                cv2.MORPH_RECT,
+                (3, 2)
+            ),
+            iterations=1
+        )
+
+        text_mask = cv2.morphologyEx(
+            text_mask,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(
+                cv2.MORPH_RECT,
+                (9, 3)
+            ),
+            iterations=1
+        )
+
+        # =========================================================
+        # 3. FIND THE USERNAME LINE IN EVERY CARD
+        # =========================================================
+
+        regions = []
+
+        # Use the strong color mask for finding the actual text.
+        # Background pastel-pink is deliberately excluded by the
+        # relatively high red-vs-green threshold above.
+        strong_text = cv2.bitwise_or(
+            dark,
+            pink
+        )
+
+        for card_index, (
+            cx,
+            cy,
+            cw,
+            ch
+        ) in enumerate(
+            cards,
+            1
+        ):
+
+            card_right = min(
+                width,
+                cx + cw
+            )
+
+            # Start a few pixels below the row edge. This avoids the
+            # rounded card border / pink background being mistaken for
+            # the username.
+            search_y1 = min(
+                height,
+                cy + 5
+            )
+
+            search_y2 = min(
+                height,
+                cy + min(
+                    70,
+                    max(
+                        45,
+                        int(ch * 0.48)
+                    )
+                )
+            )
+
+            search_x1 = max(
+                0,
+                cx + 3
+            )
+
+            search_x2 = min(
+                card_right - 3,
+                cx + max(
+                    180,
+                    int(cw * 0.50)
+                )
+            )
+
+            roi = strong_text[
+                search_y1:search_y2,
+                search_x1:search_x2
             ]
 
-            # Merge boxes on the same username line only.
-            username_line.sort(key=lambda c: c[0])
-            local = []
-            for x1, y1, x2, y2, kind in username_line:
-                if not local:
-                    local.append([x1, y1, x2, y2])
-                    continue
+            # -----------------------------------------------------
+            # Find horizontal text lines from pixel density.
+            #
+            # This is more reliable than one giant contour because
+            # the username can consist of several disconnected
+            # characters and the date is a separate line.
+            # -----------------------------------------------------
 
-                ox1, oy1, ox2, oy2 = local[-1]
-                gap = x1 - ox2
-                vertical_overlap = min(y2, oy2) - max(y1, oy1)
-                same_line = abs(((y1 + y2) / 2) - ((oy1 + oy2) / 2)) <= 10
+            line_regions = []
 
-                if vertical_overlap > 0 or (gap <= 18 and same_line):
-                    local[-1] = [
+            if roi.size:
+
+                row_counts = (
+                    roi > 0
+                ).sum(axis=1)
+
+                active_rows = (
+                    row_counts >= 3
+                )
+
+                runs = []
+                s = None
+
+                for ry, active in enumerate(
+                    active_rows
+                ):
+
+                    if active and s is None:
+                        s = ry
+
+                    elif (
+                        not active
+                        and s is not None
+                    ):
+
+                        if ry - s >= 2:
+                            runs.append(
+                                (
+                                    s,
+                                    ry - 1
+                                )
+                            )
+
+                        s = None
+
+                if (
+                    s is not None
+                    and len(active_rows) - s >= 2
+                ):
+                    runs.append(
+                        (
+                            s,
+                            len(active_rows) - 1
+                        )
+                    )
+
+                # The FIRST meaningful text run is the username.
+                if runs:
+
+                    first_start, first_end = runs[0]
+
+                    # Include nearby anti-aliased rows.
+                    first_start = max(
+                        0,
+                        first_start - 2
+                    )
+
+                    first_end = min(
+                        roi.shape[0] - 1,
+                        first_end + 2
+                    )
+
+                    line = roi[
+                        first_start:first_end + 1
+                    ]
+
+                    xs = np.where(
+                        line.any(axis=0)
+                    )[0]
+
+                    if xs.size:
+
+                        line_x1 = (
+                            search_x1
+                            + int(xs.min())
+                        )
+
+                        line_x2 = (
+                            search_x1
+                            + int(xs.max())
+                            + 1
+                        )
+
+                        line_y1 = (
+                            search_y1
+                            + first_start
+                        )
+
+                        line_y2 = (
+                            search_y1
+                            + first_end
+                            + 1
+                        )
+
+                        # Make sure this is actually on the left
+                        # username side, not the time field.
+                        if (
+                            line_x1
+                            < cx + int(cw * 0.50)
+                        ):
+
+                            line_regions.append(
+                                (
+                                    line_x1,
+                                    line_y1,
+                                    line_x2,
+                                    line_y2
+                                )
+                            )
+
+            # -----------------------------------------------------
+            # OCR fallback.
+            # -----------------------------------------------------
+
+            if not line_regions:
+
+                try:
+
+                    crop = rgb[
+                        search_y1:search_y2,
+                        search_x1:search_x2
+                    ]
+
+                    enlarged = cv2.resize(
+                        crop,
+                        None,
+                        fx=4,
+                        fy=4,
+                        interpolation=cv2.INTER_CUBIC
+                    )
+
+                    data = pytesseract.image_to_data(
+                        enlarged,
+                        config="--oem 3 --psm 11",
+                        output_type=pytesseract.Output.DICT
+                    )
+
+                    ocr_boxes = []
+
+                    for i, raw_text in enumerate(
+                        data.get(
+                            "text",
+                            []
+                        )
+                    ):
+
+                        detected_text = str(
+                            raw_text
+                        ).strip()
+
+                        if not detected_text:
+                            continue
+
+                        if is_date_or_time(
+                            detected_text
+                        ):
+                            continue
+
+                        if is_button_text(
+                            detected_text
+                        ):
+                            continue
+
+                        try:
+                            confidence = float(
+                                data["conf"][i]
+                            )
+                        except Exception:
+                            confidence = 0
+
+                        if confidence < 5:
+                            continue
+
+                        tx = int(
+                            data["left"][i] / 4
+                        )
+
+                        ty = int(
+                            data["top"][i] / 4
+                        )
+
+                        tw = int(
+                            data["width"][i] / 4
+                        )
+
+                        th = int(
+                            data["height"][i] / 4
+                        )
+
+                        if (
+                            tw < 8
+                            or th < 3
+                            or th > 35
+                        ):
+                            continue
+
+                        ax1 = (
+                            search_x1
+                            + tx
+                        )
+
+                        ay1 = (
+                            search_y1
+                            + ty
+                        )
+
+                        ax2 = min(
+                            width,
+                            ax1 + tw
+                        )
+
+                        ay2 = min(
+                            height,
+                            ay1 + th
+                        )
+
+                        if (
+                            ax1
+                            < cx + int(cw * 0.50)
+                            and ay1
+                            < search_y1 + 38
+                        ):
+                            ocr_boxes.append(
+                                (
+                                    ax1,
+                                    ay1,
+                                    ax2,
+                                    ay2
+                                )
+                            )
+
+                    if ocr_boxes:
+
+                        # Use the uppermost OCR line, but keep ALL
+                        # boxes on that line.
+                        top_y = min(
+                            box[1]
+                            for box in ocr_boxes
+                        )
+
+                        same_line = [
+                            box
+                            for box in ocr_boxes
+                            if abs(
+                                box[1] - top_y
+                            ) <= 10
+                        ]
+
+                        if same_line:
+
+                            line_regions.append(
+                                (
+                                    min(
+                                        box[0]
+                                        for box in same_line
+                                    ),
+                                    max(
+                                        cy,
+                                        min(
+                                            box[1]
+                                            for box in same_line
+                                        ) - 3
+                                    ),
+                                    max(
+                                        box[2]
+                                        for box in same_line
+                                    ),
+                                    max(
+                                        box[3]
+                                        for box in same_line
+                                    ) + 3
+                                )
+                            )
+
+                except Exception as error:
+
+                    print(
+                        f"[PROOF] Card {card_index} "
+                        f"OCR error: {error}"
+                    )
+
+            # -----------------------------------------------------
+            # Add detected username line.
+            # -----------------------------------------------------
+
+            if line_regions:
+
+                x1, y1, x2, y2 = line_regions[0]
+
+                # Small expansion around the actual username.
+                # Do NOT expand all the way to the date line.
+                x1 = max(
+                    cx + 3,
+                    x1 - 6
+                )
+
+                x2 = min(
+                    card_right - 5,
+                    x2 + 6
+                )
+
+                y1 = max(
+                    cy + 3,
+                    y1 - 5
+                )
+
+                y2 = min(
+                    height,
+                    y2 + 5
+                )
+
+                regions.append(
+                    (
+                        x1,
+                        y1,
+                        x2,
+                        y2
+                    )
+                )
+
+                print(
+                    f"[PROOF] Card {card_index}: "
+                    f"username detected at "
+                    f"({x1}, {y1}, {x2}, {y2})"
+                )
+
+            else:
+
+                # -------------------------------------------------
+                # Last-resort fallback.
+                #
+                # Compact enough to avoid the date, but wide enough
+                # to protect long usernames.
+                # -------------------------------------------------
+
+                fallback_x1 = max(
+                    0,
+                    cx + 5
+                )
+
+                fallback_x2 = min(
+                    card_right - 5,
+                    cx + max(
+                        150,
+                        int(cw * 0.55)
+                    )
+                )
+
+                fallback_y1 = min(
+                    height,
+                    cy + 12
+                )
+
+                fallback_y2 = min(
+                    height,
+                    cy + 40
+                )
+
+                if (
+                    fallback_x2 > fallback_x1
+                    and fallback_y2 > fallback_y1
+                ):
+
+                    regions.append(
+                        (
+                            fallback_x1,
+                            fallback_y1,
+                            fallback_x2,
+                            fallback_y2
+                        )
+                    )
+
+                    print(
+                        f"[PROOF] Card {card_index}: "
+                        "using fallback username protection"
+                    )
+
+        # =========================================================
+        # 4. MERGE ONLY OVERLAPPING REGIONS
+        # =========================================================
+
+        regions.sort(
+            key=lambda r: (
+                r[1],
+                r[0]
+            )
+        )
+
+        merged_regions = []
+
+        for region in regions:
+
+            x1, y1, x2, y2 = region
+
+            merged = False
+
+            for i, old in enumerate(
+                merged_regions
+            ):
+
+                ox1, oy1, ox2, oy2 = old
+
+                ix = (
+                    min(x2, ox2)
+                    - max(x1, ox1)
+                )
+
+                iy = (
+                    min(y2, oy2)
+                    - max(y1, oy1)
+                )
+
+                if (
+                    ix > 0
+                    and iy > 0
+                ):
+
+                    merged_regions[i] = (
                         min(x1, ox1),
                         min(y1, oy1),
                         max(x2, ox2),
                         max(y2, oy2)
-                    ]
-                else:
-                    local.append([x1, y1, x2, y2])
+                    )
 
-            # Filter false positives while allowing both colors.
-            for x1, y1, x2, y2 in local:
-                bw, bh = x2 - x1, y2 - y1
-                if bw < 22 or bh < 5 or bh > 34:
-                    continue
-                if bw / max(bh, 1) < 1.35:
-                    continue
+                    merged = True
+                    break
 
-                sx1, sy1 = max(0, x1), max(0, y1)
-                sx2, sy2 = min(left_limit, x2), min(height, y2)
-                if sx2 <= sx1 or sy2 <= sy1:
-                    continue
+            if not merged:
+                merged_regions.append(
+                    region
+                )
 
-                pink_ratio = float(np.mean(pink[sy1:sy2, sx1:sx2] > 0))
-                dark_ratio = float(np.mean(dark[sy1:sy2, sx1:sx2] > 0))
-                if pink_ratio < 0.015 and dark_ratio < 0.015:
-                    continue
+        print(
+            f"[PROOF] FINAL username regions: "
+            f"{len(merged_regions)}"
+        )
 
-                # Slight expansion at detection time so anti-aliased edges
-                # are included in the blur.
-                username_regions.append((
-                    max(0, x1 - 2),
-                    max(0, y1 - 2),
-                    min(width, x2 + 2),
-                    min(height, y2 + 2)
-                ))
+        # =========================================================
+        # 5. BLUR EVERY USERNAME
+        # =========================================================
 
-            print(
-                f"[PROOF] Card {card_index}: "
-                f"found {sum(1 for r in username_regions if r[1] >= cy - 12 and r[1] <= top_limit)} username region(s)"
+        result = original.copy()
+
+        for index, (
+            x1,
+            y1,
+            x2,
+            y2
+        ) in enumerate(
+            merged_regions,
+            1
+        ):
+
+            # Small safety padding around the detected letters.
+            pad_x = max(
+                5,
+                int(
+                    (x2 - x1) * 0.04
+                )
             )
 
-        # ---------------------------------------------------------
-        # Final duplicate removal. Do not merge regions from different
-        # cards unless they actually overlap.
-        # ---------------------------------------------------------
-        username_regions.sort(key=lambda r: (r[1], r[0]))
-        final_regions = []
-        for region in username_regions:
-            x1, y1, x2, y2 = region
-            duplicate = False
-            for old in final_regions:
-                ox1, oy1, ox2, oy2 = old
-                ix = max(0, min(x2, ox2) - max(x1, ox1))
-                iy = max(0, min(y2, oy2) - max(y1, oy1))
-                intersection = ix * iy
-                area = max(1, (x2 - x1) * (y2 - y1))
-                old_area = max(1, (ox2 - ox1) * (oy2 - oy1))
-                if intersection / area > 0.70 or intersection / old_area > 0.70:
-                    duplicate = True
-                    break
-            if not duplicate:
-                final_regions.append(region)
+            pad_y = max(
+                3,
+                int(
+                    (y2 - y1) * 0.16
+                )
+            )
 
-        print(f"[PROOF] FINAL username regions: {len(final_regions)}")
-
-        # ---------------------------------------------------------
-        # Blur every region with the existing soft pink effect.
-        # ---------------------------------------------------------
-        result = original.copy()
-        for index, (x1, y1, x2, y2) in enumerate(final_regions, 1):
-            pad_x = max(6, int((x2 - x1) * 0.10))
-            pad_y = max(5, int((y2 - y1) * 0.45))
             apply_pink_blur(
                 result,
                 x1 - pad_x,
@@ -1039,18 +1522,41 @@ def blur_proof_text(
                 y2 + pad_y,
                 radius=BLUR_RADIUS
             )
-            print(f"[PROOF] Blurred {index}/{len(final_regions)}")
 
-        # Watermark is deliberately applied LAST.
+            print(
+                f"[PROOF] Blurred username "
+                f"{index}/{len(merged_regions)}"
+            )
+
+        # =========================================================
+        # 6. WATERMARK LAST
+        # =========================================================
+
         output = io.BytesIO()
-        result.save(output, format="PNG")
+
+        result.save(
+            output,
+            format="PNG"
+        )
+
         output.seek(0)
-        return apply_proof_watermark(output.getvalue())
+
+        return apply_proof_watermark(
+            output.getvalue()
+        )
 
     except Exception as error:
-        print(f"[PROOF] Processing error: {error}")
+
+        print(
+            f"[PROOF] Processing error: "
+            f"{error}"
+        )
+
         traceback.print_exc()
-        return apply_proof_watermark(image_data)
+
+        return apply_proof_watermark(
+            image_data
+        )
 
 
 # =========================================================
