@@ -2481,7 +2481,7 @@ class SaySendButton(discord.ui.Button):
         roles = [r for r in view.selected_roles if r in interaction.guild.roles and not r.is_default()]
         content = " ".join(role.mention for role in roles) if roles else None
         embed = styled_embed(
-            title="୨୧・♡ 𝒶𝓃𝓃𝑜𝓊𝓃𝒸𝑒𝓂𝑒𝓃𝑡 ♡・୨୧",
+            title="୨୧・𝘢𝘯𝘯𝘰𝘶𝘯𝘤𝘦𝘮𝘦𝘯𝘵 ♡・୨୧",
             description="╭・₊˚⊹ **hello everyone!** ⊹˚₊・╮\n\n" + view.message + "\n\n╰・₊˚⊹ ♡ ⊹˚₊・╯",
             color=PINK
         )
